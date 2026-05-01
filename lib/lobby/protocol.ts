@@ -106,6 +106,35 @@ export type PlayPrivateState = {
   hand: DraftCard[];
   /** Owner-only view of own deck, top first. Allows peeking. */
   deck: DraftCard[];
+  /** Which match the recipient is currently in, or null if not seated. */
+  matchId: string | null;
+};
+
+export type BestOf = 1 | 3 | 5;
+
+export type MatchPublicState = {
+  id: string;
+  playerIds: [string, string];
+  bestOf: BestOf;
+  /** Wins per player in the current match. */
+  wins: Record<string, number>;
+  /** Live game state per player; same shape as PlayPublicState.players. */
+  players: PlayPublicPlayer[];
+  /** Game number within the match (1-based). */
+  gameNumber: number;
+  status: "active" | "complete";
+  matchWinner: string | null;
+  /** When set, current game is over and waiting for admin/players to advance. */
+  currentGameWinner: string | null;
+  /** Whose turn it is in the current game. Cosmetic only — no rule enforcement. */
+  currentTurnPlayerId: string;
+  /** Turn number within the current game (1-based). */
+  turnNumber: number;
+};
+
+export type MatchPairing = {
+  playerIds: [string, string];
+  bestOf: BestOf;
 };
 
 export type PlayAction =
@@ -142,7 +171,12 @@ export const CONFIG_BOUNDS = {
   packsPerPlayer: { min: 1, max: 6 },
 } as const;
 
-export type LobbyPhase = "waiting" | "drafting" | "deckbuilding" | "playing";
+export type LobbyPhase =
+  | "waiting"
+  | "drafting"
+  | "deckbuilding"
+  | "matching"
+  | "playing";
 
 export type LobbyPlayer = {
   id: string;
@@ -159,6 +193,10 @@ export type LobbyState = {
   draft: DraftPublicState | null;
   deckbuild: DeckbuildPublicState | null;
   play: PlayPublicState | null;
+  /** When in matching/playing phases, the current set of matches. */
+  matches: MatchPublicState[] | null;
+  /** IDs of players who have a finished loadout but aren't seated in the current matches (sit-outs). */
+  unpairedPlayerIds: string[];
   /** When set, the lobby uses this set for the draft instead of MOCK_SET. */
   customSet: Card[] | null;
   /** Human-readable name of the active custom set (e.g., "Tempest", "Custom (LLM)"). */
@@ -175,7 +213,12 @@ export type ClientMessage =
   | { type: "setReady"; ready: boolean }
   | { type: "startPlay" }
   | { type: "playAction"; action: PlayAction }
-  | { type: "setCustomSet"; cards: Card[] | null; name?: string | null };
+  | { type: "setCustomSet"; cards: Card[] | null; name?: string | null }
+  | { type: "startMatches"; pairings: MatchPairing[] }
+  | { type: "concedeGame"; matchId: string }
+  | { type: "advanceGame"; matchId: string }
+  | { type: "passTurn"; matchId: string }
+  | { type: "returnToMatching" };
 
 export type ServerMessage =
   | {

@@ -180,6 +180,8 @@ function LobbyConnected({
           router.push(`/draft/${lobbyId}`);
         } else if (msg.state.phase === "deckbuilding") {
           router.push(`/build/${lobbyId}`);
+        } else if (msg.state.phase === "matching") {
+          router.push(`/match/${lobbyId}`);
         } else if (msg.state.phase === "playing") {
           router.push(`/play/${lobbyId}`);
         }

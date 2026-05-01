@@ -13,6 +13,7 @@ import { z } from "zod";
 import {
   type BasicLandCounts,
   type BattlefieldCard,
+  type BestOf,
   type ClientMessage,
   type DeckbuildPrivateState,
   type DeckbuildPublicState,
@@ -22,9 +23,11 @@ import {
   type LobbyConfig,
   type LobbyPhase,
   type LobbyState,
+  type MatchPairing,
+  type MatchPublicState,
   type PlayAction,
   type PlayPrivateState,
-  type PlayPublicState,
+  type PlayPublicPlayer,
   type ServerMessage,
   type Zone,
   type ZoneTarget,
@@ -88,9 +91,29 @@ type PlayingPlayerState = {
   life: number;
 };
 
-type PlayRuntime = {
-  seatOrder: string[];
+/** A player's finished deckbuild — used to start fresh games of a match. */
+type Loadout = {
+  /** Cards drafted and chosen for the deck (excludes basics; basics are minted at game start). */
+  deckCards: DraftCard[];
+  basicLands: BasicLandCounts;
+};
+
+type MatchRuntime = {
+  id: string;
+  playerIds: [string, string];
+  bestOf: BestOf;
+  wins: Record<string, number>;
+  gameNumber: number;
   states: Record<string, PlayingPlayerState>;
+  status: "active" | "complete";
+  matchWinner: string | null;
+  /** When set, the current game has a winner and is awaiting `advanceGame`. */
+  currentGameWinner: string | null;
+  /** Cosmetic turn pointer; alternates on passTurn / resets on advanceGame. */
+  currentTurnPlayerId: string;
+  /** Whoever should start the next game (alternates per game). */
+  nextGameStarterId: string;
+  turnNumber: number;
 };
 
 export default class LobbyServer implements Party.Server {
@@ -101,7 +124,9 @@ export default class LobbyServer implements Party.Server {
 
   private draft: DraftRuntime | null = null;
   private deckbuild: DeckbuildRuntime | null = null;
-  private play: PlayRuntime | null = null;
+  /** Loadouts captured at end of deckbuild; used for every game in a player's matches. */
+  private loadouts: Record<string, Loadout> | null = null;
+  private matches: MatchRuntime[] | null = null;
   private customSet: Card[] | null = null;
   private customSetName: string | null = null;
 
@@ -263,14 +288,91 @@ export default class LobbyServer implements Party.Server {
       case "startPlay": {
         if (!player.isAdmin) return;
         if (this.phase !== "deckbuilding" || !this.deckbuild) return;
-        this.transitionToPlaying();
+        this.transitionToMatching();
+        this.broadcastState();
+        return;
+      }
+      case "startMatches": {
+        if (!player.isAdmin) return;
+        if (this.phase !== "matching" || !this.loadouts) return;
+        const built = this.buildMatches(msg.pairings);
+        if (!built.ok) {
+          this.send(sender, { type: "error", message: built.message });
+          return;
+        }
+        this.matches = built.matches;
+        this.phase = "playing";
         this.broadcastState();
         return;
       }
       case "playAction": {
-        if (this.phase !== "playing" || !this.play) return;
-        if (!this.play.states[playerId]) return;
-        this.applyPlayAction(playerId, msg.action);
+        if (this.phase !== "playing" || !this.matches) return;
+        const match = this.matches.find((m) =>
+          m.playerIds.includes(playerId),
+        );
+        if (!match) return;
+        if (match.status === "complete" || match.currentGameWinner) return;
+        if (!match.states[playerId]) return;
+        this.applyPlayAction(match, playerId, msg.action);
+        this.broadcastState();
+        return;
+      }
+      case "concedeGame": {
+        if (this.phase !== "playing" || !this.matches) return;
+        const match = this.matches.find((m) => m.id === msg.matchId);
+        if (!match) return;
+        if (!match.playerIds.includes(playerId)) return;
+        if (match.status === "complete" || match.currentGameWinner) return;
+        const winner = match.playerIds.find((p) => p !== playerId)!;
+        match.currentGameWinner = winner;
+        match.wins[winner] = (match.wins[winner] ?? 0) + 1;
+        const needed = Math.ceil(match.bestOf / 2);
+        if (match.wins[winner] >= needed) {
+          match.status = "complete";
+          match.matchWinner = winner;
+        }
+        this.broadcastState();
+        return;
+      }
+      case "advanceGame": {
+        if (this.phase !== "playing" || !this.matches || !this.loadouts) return;
+        const match = this.matches.find((m) => m.id === msg.matchId);
+        if (!match) return;
+        if (!match.playerIds.includes(playerId) && !player.isAdmin) return;
+        if (match.status === "complete") return;
+        if (!match.currentGameWinner) return;
+        match.gameNumber += 1;
+        match.currentGameWinner = null;
+        match.currentTurnPlayerId = match.nextGameStarterId;
+        match.nextGameStarterId = match.playerIds.find(
+          (p) => p !== match.nextGameStarterId,
+        )!;
+        match.turnNumber = 1;
+        for (const pid of match.playerIds) {
+          match.states[pid] = freshGameState(this.loadouts[pid]);
+        }
+        this.broadcastState();
+        return;
+      }
+      case "passTurn": {
+        if (this.phase !== "playing" || !this.matches) return;
+        const match = this.matches.find((m) => m.id === msg.matchId);
+        if (!match) return;
+        if (!match.playerIds.includes(playerId)) return;
+        if (match.status === "complete" || match.currentGameWinner) return;
+        // Anyone in the pair can pass — usually the active player, but allow either.
+        match.currentTurnPlayerId = match.playerIds.find(
+          (p) => p !== match.currentTurnPlayerId,
+        )!;
+        match.turnNumber += 1;
+        this.broadcastState();
+        return;
+      }
+      case "returnToMatching": {
+        if (!player.isAdmin) return;
+        if (this.phase !== "playing" || !this.matches) return;
+        this.matches = null;
+        this.phase = "matching";
         this.broadcastState();
         return;
       }
@@ -425,11 +527,11 @@ export default class LobbyServer implements Party.Server {
     this.phase = "deckbuilding";
   }
 
-  // ---------- playing logic ----------
+  // ---------- matching / playing logic ----------
 
-  private transitionToPlaying() {
+  private transitionToMatching() {
     if (!this.deckbuild) return;
-    const states: Record<string, PlayingPlayerState> = {};
+    const loadouts: Record<string, Loadout> = {};
     for (const pid of this.deckbuild.seatOrder) {
       const db = this.deckbuild.states[pid];
       const poolMap = new Map(db.pool.map((c) => [c.instanceId, c]));
@@ -438,27 +540,66 @@ export default class LobbyServer implements Party.Server {
         const c = poolMap.get(id);
         if (c) drafted.push(c);
       }
-      const lands = mintBasicLands(db.basicLands);
-      const fullDeck = shuffle([...drafted, ...lands]);
-      const handSize = Math.min(STARTING_HAND, fullDeck.length);
-      const hand = fullDeck.splice(0, handSize);
-      states[pid] = {
-        deck: fullDeck,
-        hand,
-        battlefield: [],
-        graveyard: [],
-        exile: [],
-        life: STARTING_LIFE,
+      loadouts[pid] = {
+        deckCards: drafted,
+        basicLands: { ...db.basicLands },
       };
     }
-    this.play = { seatOrder: this.deckbuild.seatOrder, states };
+    this.loadouts = loadouts;
     this.deckbuild = null;
-    this.phase = "playing";
+    this.matches = null;
+    this.phase = "matching";
   }
 
-  private applyPlayAction(playerId: string, action: PlayAction) {
-    if (!this.play) return;
-    const ps = this.play.states[playerId];
+  private buildMatches(
+    pairings: MatchPairing[],
+  ):
+    | { ok: true; matches: MatchRuntime[] }
+    | { ok: false; message: string } {
+    if (!this.loadouts) return { ok: false, message: "No loadouts." };
+    if (pairings.length === 0)
+      return { ok: false, message: "Need at least one pairing." };
+    const seen = new Set<string>();
+    const built: MatchRuntime[] = [];
+    for (const p of pairings) {
+      const [a, b] = p.playerIds;
+      if (a === b) return { ok: false, message: "A player can't face themselves." };
+      if (!this.loadouts[a] || !this.loadouts[b])
+        return { ok: false, message: "Pairing references unknown player." };
+      if (seen.has(a) || seen.has(b))
+        return { ok: false, message: "A player appears in two pairings." };
+      seen.add(a);
+      seen.add(b);
+      const bestOf: BestOf = p.bestOf === 1 || p.bestOf === 3 || p.bestOf === 5
+        ? p.bestOf
+        : 1;
+      built.push({
+        id: matchId(a, b),
+        playerIds: [a, b],
+        bestOf,
+        wins: { [a]: 0, [b]: 0 },
+        gameNumber: 1,
+        states: {
+          [a]: freshGameState(this.loadouts[a]),
+          [b]: freshGameState(this.loadouts[b]),
+        },
+        status: "active",
+        matchWinner: null,
+        currentGameWinner: null,
+        currentTurnPlayerId: a,
+        nextGameStarterId: b,
+        turnNumber: 1,
+      });
+    }
+    return { ok: true, matches: built };
+  }
+
+  private applyPlayAction(
+    match: MatchRuntime,
+    playerId: string,
+    action: PlayAction,
+  ) {
+    const ps = match.states[playerId];
     if (!ps) return;
 
     switch (action.type) {
@@ -568,10 +709,25 @@ export default class LobbyServer implements Party.Server {
       })),
       draft: this.draft ? this.draftPublicSnapshot() : null,
       deckbuild: this.deckbuild ? this.deckbuildPublicSnapshot() : null,
-      play: this.play ? this.playPublicSnapshot() : null,
+      play: null,
+      matches: this.matches ? this.matchesPublicSnapshot() : null,
+      unpairedPlayerIds: this.unpairedPlayerIds(),
       customSet: this.customSet,
       customSetName: this.customSetName,
     };
+  }
+
+  private unpairedPlayerIds(): string[] {
+    if (this.phase !== "matching" && this.phase !== "playing") return [];
+    if (!this.loadouts) return [];
+    const all = Object.keys(this.loadouts);
+    const inMatch = new Set<string>();
+    if (this.matches) {
+      for (const m of this.matches) {
+        for (const pid of m.playerIds) inMatch.add(pid);
+      }
+    }
+    return all.filter((p) => !inMatch.has(p));
   }
 
   private draftPublicSnapshot(): DraftPublicState {
@@ -649,14 +805,22 @@ export default class LobbyServer implements Party.Server {
     };
   }
 
-  private playPublicSnapshot(): PlayPublicState {
-    if (!this.play) throw new Error("no play");
-    const play = this.play;
-    return {
-      seatOrder: play.seatOrder,
-      players: play.seatOrder.map((pid) => {
+  private matchesPublicSnapshot(): MatchPublicState[] {
+    if (!this.matches) return [];
+    return this.matches.map((m) => ({
+      id: m.id,
+      playerIds: m.playerIds,
+      bestOf: m.bestOf,
+      wins: { ...m.wins },
+      gameNumber: m.gameNumber,
+      status: m.status,
+      matchWinner: m.matchWinner,
+      currentGameWinner: m.currentGameWinner,
+      currentTurnPlayerId: m.currentTurnPlayerId,
+      turnNumber: m.turnNumber,
+      players: m.playerIds.map((pid): PlayPublicPlayer => {
         const player = this.players.get(pid)!;
-        const ps = play.states[pid];
+        const ps = m.states[pid];
         return {
           id: pid,
           name: player.name,
@@ -669,14 +833,16 @@ export default class LobbyServer implements Party.Server {
           connected: player.connId !== null,
         };
       }),
-    };
+    }));
   }
 
   private playPrivateFor(playerId: string): PlayPrivateState | null {
-    if (!this.play) return null;
-    const ps = this.play.states[playerId];
+    if (!this.matches) return null;
+    const match = this.matches.find((m) => m.playerIds.includes(playerId));
+    if (!match) return null;
+    const ps = match.states[playerId];
     if (!ps) return null;
-    return { hand: ps.hand, deck: ps.deck };
+    return { hand: ps.hand, deck: ps.deck, matchId: match.id };
   }
 
   // ---------- transport ----------
@@ -776,6 +942,37 @@ function placeInZone(
 
 function clampLife(n: number): number {
   return Math.max(-99, Math.min(999, Math.floor(n)));
+}
+
+function freshGameState(loadout: Loadout): PlayingPlayerState {
+  const lands = mintBasicLands(loadout.basicLands);
+  // Re-mint deck cards so a new game gets fresh instanceIds (avoids any stale
+  // attachedTo references from prior games and prevents cross-game ID reuse).
+  const reminted = mintDraftCards(loadout.deckCards.map(stripInstance));
+  const fullDeck = shuffle([...reminted, ...lands]);
+  const handSize = Math.min(STARTING_HAND, fullDeck.length);
+  const hand = fullDeck.splice(0, handSize);
+  return {
+    deck: fullDeck,
+    hand,
+    battlefield: [],
+    graveyard: [],
+    exile: [],
+    life: STARTING_LIFE,
+  };
+}
+
+function stripInstance(c: DraftCard): Card {
+  // mintDraftCards expects raw Card defs; strip instance-specific fields.
+  const { instanceId, ...rest } = c;
+  void instanceId;
+  return rest;
+}
+
+function matchId(a: string, b: string): string {
+  return `m_${a.slice(0, 4)}-${b.slice(0, 4)}_${Math.random()
+    .toString(36)
+    .slice(2, 7)}`;
 }
 
 function mintBasicLands(counts: BasicLandCounts): DraftCard[] {

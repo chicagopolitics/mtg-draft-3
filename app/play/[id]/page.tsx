@@ -10,6 +10,7 @@ import {
   type BattlefieldCard,
   type ClientMessage,
   type LobbyState,
+  type MatchPublicState,
   type PlayAction,
   type PlayPrivateState,
   type PlayPublicPlayer,
@@ -139,6 +140,8 @@ function PlayConnected({
           router.push(`/draft/${lobbyId}`);
         } else if (msg.state.phase === "deckbuilding") {
           router.push(`/build/${lobbyId}`);
+        } else if (msg.state.phase === "matching") {
+          router.push(`/match/${lobbyId}`);
         }
       } else if (msg.type === "error") {
         setError(msg.message);
@@ -157,20 +160,109 @@ function PlayConnected({
     socket.send(JSON.stringify(msg));
   }
 
-  if (!state || !state.play || !priv) {
-    return <Centered>loading play table…</Centered>;
+  function sendRaw(msg: ClientMessage) {
+    socket.send(JSON.stringify(msg));
   }
+
+  if (!state) return <Centered>loading play table…</Centered>;
+  if (!state.matches || state.matches.length === 0) {
+    return <Centered>setting up matches…</Centered>;
+  }
+
+  const myMatch = priv?.matchId
+    ? state.matches.find((m) => m.id === priv.matchId)
+    : null;
+  const isAdmin = state.players.find((p) => p.id === playerId)?.isAdmin ?? false;
+
+  if (!myMatch) {
+    return (
+      <SpectatorView
+        state={state}
+        playerId={playerId}
+        isAdmin={isAdmin}
+        onReturn={() => sendRaw({ type: "returnToMatching" })}
+      />
+    );
+  }
+  if (!priv) return <Centered>loading hand…</Centered>;
+
+  const synthetic: PlayPublicState = {
+    seatOrder: myMatch.players.map((p) => p.id),
+    players: myMatch.players,
+  };
 
   return (
     <PlayBoard
       lobbyId={lobbyId}
       playerId={playerId}
       lobby={state}
-      play={state.play}
+      play={synthetic}
       priv={priv}
+      match={myMatch}
+      isAdmin={isAdmin}
       send={send}
+      sendRaw={sendRaw}
       error={error}
     />
+  );
+}
+
+function SpectatorView({
+  state,
+  playerId,
+  isAdmin,
+  onReturn,
+}: {
+  state: LobbyState;
+  playerId: string;
+  isAdmin: boolean;
+  onReturn: () => void;
+}) {
+  const matches = state.matches ?? [];
+  const allComplete = matches.every((m) => m.status === "complete");
+  const me = state.players.find((p) => p.id === playerId);
+  return (
+    <main className="mx-auto max-w-3xl space-y-4 p-6">
+      <h1 className="text-2xl font-bold">
+        {me?.name ? `${me.name}, you're` : "You're"} sitting this round out
+      </h1>
+      <ul className="space-y-2">
+        {matches.map((m) => (
+          <li
+            key={m.id}
+            className="rounded border border-zinc-300 p-3 text-sm dark:border-zinc-700"
+          >
+            <div className="flex items-center justify-between">
+              <span>
+                {m.players[0].name} <span className="text-zinc-500">vs</span>{" "}
+                {m.players[1].name}
+              </span>
+              <span className="font-mono text-xs text-zinc-500">
+                Bo{m.bestOf} · game {m.gameNumber}
+              </span>
+            </div>
+            <div className="mt-1 text-xs text-zinc-500">
+              {m.status === "complete"
+                ? `Winner: ${m.players.find((p) => p.id === m.matchWinner)?.name ?? "?"}`
+                : `${m.wins[m.players[0].id] ?? 0} – ${m.wins[m.players[1].id] ?? 0}`}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {isAdmin && allComplete ? (
+        <button
+          type="button"
+          onClick={onReturn}
+          className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+        >
+          Re-pair players
+        </button>
+      ) : (
+        <p className="text-xs text-zinc-500">
+          Waiting for active matches to finish.
+        </p>
+      )}
+    </main>
   );
 }
 
@@ -180,7 +272,10 @@ function PlayBoard({
   lobby,
   play,
   priv,
+  match,
+  isAdmin,
   send,
+  sendRaw,
   error,
 }: {
   lobbyId: string;
@@ -188,9 +283,21 @@ function PlayBoard({
   lobby: LobbyState;
   play: PlayPublicState;
   priv: PlayPrivateState;
+  match: MatchPublicState;
+  isAdmin: boolean;
   send: (action: PlayAction) => void;
+  sendRaw: (msg: ClientMessage) => void;
   error: string | null;
 }) {
+  const opponentId = match.playerIds.find((id) => id !== playerId) ?? "";
+  const myWins = match.wins[playerId] ?? 0;
+  const oppWins = match.wins[opponentId] ?? 0;
+  const winsNeeded = Math.ceil(match.bestOf / 2);
+  const allMatches = lobby.matches ?? [];
+  const allMatchesComplete = allMatches.every((m) => m.status === "complete");
+  const opponentName =
+    match.players.find((p) => p.id === opponentId)?.name ?? "Opponent";
+  void lobbyId;
   const me = play.players.find((p) => p.id === playerId);
   const opponents = play.players.filter((p) => p.id !== playerId);
 
@@ -308,7 +415,59 @@ function PlayBoard({
             tap your cards/piles for actions · opponent zones are read-only
           </p>
         </div>
-        <p className="text-sm font-medium">{me.name}</p>
+        <div className="flex items-center gap-3">
+          <div className="text-right text-xs text-zinc-600 dark:text-zinc-400">
+            <div className="font-mono">
+              vs {opponentName} · Bo{match.bestOf} · game {match.gameNumber}
+            </div>
+            <div className="font-mono">
+              You {myWins} – {oppWins} {opponentName} (first to {winsNeeded})
+            </div>
+          </div>
+          {match.status === "active" && !match.currentGameWinner ? (
+            <>
+              <div
+                className={`rounded px-2 py-1 text-xs font-semibold ${
+                  match.currentTurnPlayerId === playerId
+                    ? "bg-emerald-500 text-white"
+                    : "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"
+                }`}
+                title={`Turn ${match.turnNumber}`}
+              >
+                {match.currentTurnPlayerId === playerId
+                  ? `Your turn (T${match.turnNumber})`
+                  : `${opponentName}'s turn (T${match.turnNumber})`}
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  sendRaw({ type: "passTurn", matchId: match.id })
+                }
+                className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
+                disabled={match.currentTurnPlayerId !== playerId}
+                title={
+                  match.currentTurnPlayerId === playerId
+                    ? "End your turn"
+                    : "It's not your turn"
+                }
+              >
+                Pass turn
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("Concede this game?")) {
+                    sendRaw({ type: "concedeGame", matchId: match.id });
+                  }
+                }}
+                className="rounded border border-red-400 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+              >
+                Concede game
+              </button>
+            </>
+          ) : null}
+          <p className="text-sm font-medium">{me.name}</p>
+        </div>
       </header>
 
       <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-950">
@@ -321,6 +480,7 @@ function PlayBoard({
             <OpponentArea
               key={opp.id}
               player={opp}
+              isCurrentTurn={match.currentTurnPlayerId === opp.id}
               onCardPeek={(card, tapped) => setPeek({ card, tapped })}
               onPileClick={(zone) => onOpponentPileClick(opp, zone)}
             />
@@ -332,6 +492,7 @@ function PlayBoard({
         <YourArea
           me={me}
           priv={priv}
+          isCurrentTurn={match.currentTurnPlayerId === playerId}
           onCardClick={onYourCardClick}
           dragApi={dragApi}
           send={send}
@@ -388,16 +549,86 @@ function PlayBoard({
           {error}
         </p>
       ) : null}
+
+      {match.status === "active" && match.currentGameWinner ? (
+        <ResultOverlay
+          title={
+            match.currentGameWinner === playerId
+              ? "You won the game!"
+              : `${opponentName} won the game.`
+          }
+          subtitle={`Score: You ${myWins} – ${oppWins} ${opponentName}`}
+          actionLabel="Start next game"
+          onAction={() => sendRaw({ type: "advanceGame", matchId: match.id })}
+        />
+      ) : null}
+
+      {match.status === "complete" ? (
+        <ResultOverlay
+          title={
+            match.matchWinner === playerId
+              ? "You won the match!"
+              : `${opponentName} won the match.`
+          }
+          subtitle={`Final: You ${myWins} – ${oppWins} ${opponentName}`}
+          actionLabel={
+            isAdmin && allMatchesComplete
+              ? "Re-pair players"
+              : isAdmin
+                ? "Waiting for other matches…"
+                : "Waiting for other matches…"
+          }
+          onAction={
+            isAdmin && allMatchesComplete
+              ? () => sendRaw({ type: "returnToMatching" })
+              : undefined
+          }
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ResultOverlay({
+  title,
+  subtitle,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  subtitle: string;
+  actionLabel: string;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="absolute inset-0 z-50 grid place-items-center bg-black/60">
+      <div className="space-y-3 rounded bg-white p-6 text-center shadow-xl dark:bg-zinc-900">
+        <h2 className="text-xl font-bold">{title}</h2>
+        <p className="text-sm text-zinc-500">{subtitle}</p>
+        {onAction ? (
+          <button
+            type="button"
+            onClick={onAction}
+            className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+          >
+            {actionLabel}
+          </button>
+        ) : (
+          <p className="text-xs text-zinc-400">{actionLabel}</p>
+        )}
+      </div>
     </div>
   );
 }
 
 function OpponentArea({
   player,
+  isCurrentTurn = false,
   onCardPeek,
   onPileClick,
 }: {
   player: PlayPublicPlayer;
+  isCurrentTurn?: boolean;
   onCardPeek: (card: DraftCard, tapped: boolean) => void;
   onPileClick: (zone: "graveyard" | "exile") => void;
 }) {
@@ -412,12 +643,19 @@ function OpponentArea({
   }
   return (
     <section
-      className={`flex min-w-0 flex-1 flex-col gap-1 rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-800 dark:bg-zinc-900 ${
-        !player.connected ? "opacity-60" : ""
-      }`}
+      className={`flex min-w-0 flex-1 flex-col gap-1 rounded border bg-zinc-50 p-2 dark:bg-zinc-900 ${
+        isCurrentTurn
+          ? "border-emerald-500 ring-2 ring-emerald-500/40"
+          : "border-zinc-200 dark:border-zinc-800"
+      } ${!player.connected ? "opacity-60" : ""}`}
     >
       <header className="flex items-baseline gap-3">
         <p className="text-sm font-semibold">{player.name}</p>
+        {isCurrentTurn ? (
+          <span className="rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+            their turn
+          </span>
+        ) : null}
         <p className="font-mono text-sm text-rose-600 dark:text-rose-400">
           ♥ {player.life}
         </p>
@@ -535,12 +773,14 @@ function PileChip({
 function YourArea({
   me,
   priv,
+  isCurrentTurn = false,
   onCardClick,
   dragApi,
   send,
 }: {
   me: PlayPublicPlayer;
   priv: PlayPrivateState;
+  isCurrentTurn?: boolean;
   onCardClick: (card: DraftCard, zone: Zone) => void;
   dragApi: DragApi;
   send: (action: PlayAction) => void;
@@ -595,7 +835,11 @@ function YourArea({
   }
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+    <div
+      className={`flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-4 ${
+        isCurrentTurn ? "ring-4 ring-inset ring-emerald-500/50" : ""
+      }`}
+    >
       <section
         onDragOver={(e) => {
           if (dragApi.isValidDropFor("battlefield")) e.preventDefault();
@@ -610,9 +854,14 @@ function YourArea({
             : "border-emerald-300 dark:border-emerald-900/50"
         }`}
       >
-        <p className="mb-1 text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
-          your battlefield ({me.battlefield.length})
-          {bfHighlight ? " · drop here" : ""}
+        <p className="mb-1 flex items-center gap-2 text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+          <span>your battlefield ({me.battlefield.length})</span>
+          {isCurrentTurn ? (
+            <span className="rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+              your turn
+            </span>
+          ) : null}
+          {bfHighlight ? <span>· drop here</span> : null}
         </p>
         {me.battlefield.length === 0 ? (
           <p className="p-2 text-xs text-zinc-500">empty.</p>
