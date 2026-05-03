@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import usePartySocket from "partysocket/react";
 
 import { CardView } from "@/components/Card";
+import { DeckStats } from "@/components/DeckStats";
 import {
   type BasicLandCounts,
   type ClientMessage,
@@ -259,6 +260,13 @@ function Builder({
         counts={priv.basicLands}
         bump={bumpLand}
         clear={clearLands}
+      />
+
+      <DeckStats
+        cards={inDeck}
+        basics={priv.basicLands}
+        title="deck stats"
+        emptyHint="add cards to your deck to see stats."
       />
 
       <div className="grid gap-4 lg:grid-cols-2">

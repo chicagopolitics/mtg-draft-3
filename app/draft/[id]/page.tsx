@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import usePartySocket from "partysocket/react";
 
 import { CardView } from "@/components/Card";
+import { DeckStats } from "@/components/DeckStats";
 import {
   type ClientMessage,
   type DraftPrivateState,
@@ -201,6 +202,12 @@ function DraftActive({
           <PackPicker pack={priv!.currentPack!} onPick={pick} />
         )}
       </section>
+
+      <DeckStats
+        cards={priv?.picked ?? []}
+        title="your pool so far"
+        emptyHint="stats will appear once you've drafted a card."
+      />
 
       <PickedPool picked={priv?.picked ?? []} />
 
