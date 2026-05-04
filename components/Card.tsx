@@ -80,13 +80,13 @@ function ManaPips({ cost }: { cost: ManaCost }) {
 function ArtPlaceholder({ card }: { card: Card }) {
   if (card.artUrl) {
     return (
-      <div className="h-28 shrink-0 overflow-hidden rounded bg-zinc-100 dark:bg-zinc-800">
+      <div className="aspect-[4/3] w-full shrink-0 overflow-hidden rounded bg-zinc-100 dark:bg-zinc-800">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={card.artUrl}
           alt={card.name}
           loading="lazy"
-          className="h-full w-full object-cover"
+          className="h-full w-full object-cover object-top"
         />
       </div>
     );
@@ -104,7 +104,7 @@ function ArtPlaceholder({ card }: { card: Card }) {
 
   return (
     <div
-      className={`flex h-28 shrink-0 items-center justify-center rounded bg-gradient-to-br ${gradient}`}
+      className={`flex aspect-[4/3] w-full shrink-0 items-center justify-center rounded bg-gradient-to-br ${gradient}`}
     >
       <span className="font-serif text-3xl tracking-wider text-black/20 dark:text-white/20">
         {card.name
@@ -118,19 +118,28 @@ function ArtPlaceholder({ card }: { card: Card }) {
 }
 
 /**
- * Shrinks rules + flavor font size until it fits within the parent's height,
- * down to TEXT_MIN_PX. Beyond that, lets overflow get hidden by the parent.
+ * Shrinks rules + flavor font size until it fits, down to TEXT_MIN_PX. If it
+ * still overflows at the minimum size, truncates the rules text with "…" so
+ * nothing escapes the card boundary.
  */
 function FitText({ text, flavor }: { text: string; flavor?: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
   const [px, setPx] = useState(TEXT_MAX_PX);
+  const [clipped, setClipped] = useState(text);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
     const inner = innerRef.current;
     if (!container || !inner) return;
 
+    const rulesEl = inner.querySelector<HTMLElement>("[data-rules]");
+    if (!rulesEl) return;
+
+    // Reset to full text for measurement.
+    rulesEl.textContent = text;
+
+    // Step 1: shrink font size until it fits or we hit min.
     let size = TEXT_MAX_PX;
     inner.style.fontSize = `${size}px`;
     while (size > TEXT_MIN_PX && inner.scrollHeight > container.clientHeight) {
@@ -138,15 +147,35 @@ function FitText({ text, flavor }: { text: string; flavor?: string }) {
       inner.style.fontSize = `${size}px`;
     }
     setPx(size);
+
+    // Step 2: if still overflowing at min size, binary-search a truncation.
+    if (inner.scrollHeight > container.clientHeight) {
+      let lo = 0;
+      let hi = text.length;
+      while (lo < hi) {
+        const mid = Math.floor((lo + hi + 1) / 2);
+        rulesEl.textContent = text.slice(0, mid).trimEnd() + "…";
+        if (inner.scrollHeight <= container.clientHeight) {
+          lo = mid;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      const best = text.slice(0, lo).trimEnd() + "…";
+      rulesEl.textContent = best;
+      setClipped(best);
+    } else {
+      setClipped(text);
+    }
   }, [text, flavor]);
 
   return (
-    <div ref={containerRef} className="flex-1 overflow-hidden">
+    <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden">
       <div
         ref={innerRef}
         style={{ fontSize: `${px}px`, lineHeight: 1.25 }}
       >
-        <p>{text}</p>
+        <p data-rules>{clipped}</p>
         {flavor ? (
           <p className="mt-1 italic text-zinc-500 dark:text-zinc-400">
             {flavor}
@@ -183,7 +212,7 @@ export function CardView({ card }: { card: Card }) {
         </span>
       </div>
 
-      <div className="flex flex-1 flex-col rounded bg-zinc-50 p-2 leading-snug dark:bg-zinc-800/50">
+      <div className="flex min-h-0 flex-1 flex-col rounded bg-zinc-50 p-2 leading-snug dark:bg-zinc-800/50">
         <FitText text={card.text} flavor={card.flavor} />
       </div>
 
