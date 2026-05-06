@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import usePartySocket from "partysocket/react";
 
@@ -382,6 +382,29 @@ function PlayBoard({
   }
 
   const [cardAction, setCardAction] = useState<CardActionTarget | null>(null);
+
+  // Turn-pop banner: when the active team flips to mine, show a brief banner.
+  // We track the previous turn idx so we don't fire on initial mount, and so
+  // the banner doesn't re-trigger on unrelated state updates that re-render.
+  const [showTurnPop, setShowTurnPop] = useState(false);
+  const prevTurnRef = useRef<number | null>(null);
+  useEffect(() => {
+    const prev = prevTurnRef.current;
+    prevTurnRef.current = match.currentTurnTeamIdx;
+    // Skip the first render — we don't want to greet someone with a banner
+    // just because they refreshed during their own turn.
+    if (prev === null) return;
+    if (
+      prev !== match.currentTurnTeamIdx &&
+      match.currentTurnTeamIdx === myTeamIdx &&
+      match.status === "active" &&
+      match.currentGameWinner === null
+    ) {
+      setShowTurnPop(true);
+      const t = setTimeout(() => setShowTurnPop(false), 1200);
+      return () => clearTimeout(t);
+    }
+  }, [match.currentTurnTeamIdx, myTeamIdx, match.status, match.currentGameWinner]);
   const [pile, setPile] = useState<PileTarget | null>(null);
   const [peek, setPeek] = useState<PeekTarget | null>(null);
   const [dragging, setDragging] = useState<{
@@ -489,7 +512,7 @@ function PlayBoard({
   };
 
   return (
-    <div className="flex h-screen flex-col bg-zinc-100 font-sans dark:bg-black">
+    <div className="relative flex h-screen flex-col bg-zinc-100 font-sans dark:bg-black">
       <header className="flex shrink-0 items-baseline justify-between border-b border-zinc-200 bg-white px-4 py-2 dark:border-zinc-800 dark:bg-zinc-950">
         <div>
           <h1 className="text-base font-semibold tracking-tight">
@@ -729,6 +752,23 @@ function PlayBoard({
           }
         />
       ) : null}
+
+      {/*
+        Turn-pop banner: drops down from the top of the play area, scales up,
+        fades. Pointer-events disabled so it can't intercept clicks. Always
+        rendered so the transition runs both directions (in + out).
+      */}
+      <div
+        className={`pointer-events-none absolute inset-x-0 top-0 z-40 flex justify-center pt-4 transition-all duration-300 ${
+          showTurnPop
+            ? "translate-y-0 scale-100 opacity-100"
+            : "-translate-y-8 scale-95 opacity-0"
+        }`}
+      >
+        <div className="rounded-full bg-emerald-500 px-8 py-3 text-2xl font-bold tracking-wide text-white shadow-2xl ring-4 ring-emerald-300/60">
+          {isTwoHeaded ? "YOUR TEAM'S TURN" : "YOUR TURN"}
+        </div>
+      </div>
     </div>
   );
 }
@@ -864,9 +904,14 @@ function OpponentArea({
                         counters={parent.counters}
                         size="xs"
                         highlight={isAttachTarget}
-                        onClick={() =>
-                          onCardPeek(parent.card, parent.tapped, parent.counters)
-                        }
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          onCardPeek(
+                            parent.card,
+                            parent.tapped,
+                            parent.counters,
+                          );
+                        }}
                         onDragOver={(e) => {
                           if (dragApi.canAttachTo(parent.card)) {
                             e.preventDefault();
@@ -913,13 +958,14 @@ function OpponentArea({
                                 size="xs"
                                 casterDotClass={dot.casterDotClass}
                                 casterDotLabel={dot.casterDotLabel}
-                                onClick={() =>
+                                onContextMenu={(e) => {
+                                  e.preventDefault();
                                   onCardPeek(
                                     kid.b.card,
                                     kid.b.tapped,
                                     kid.b.counters,
-                                  )
-                                }
+                                  );
+                                }}
                               />
                             </div>
                           );
@@ -956,7 +1002,10 @@ function OpponentArea({
                         tapped={b.tapped}
                         size="xs"
                         style={{ marginLeft: i === 0 ? 0 : "-3.5rem" }}
-                        onClick={() => onCardPeek(b.card, b.tapped, b.counters)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          onCardPeek(b.card, b.tapped, b.counters);
+                        }}
                       />
                     ))}
                   </div>
