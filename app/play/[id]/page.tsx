@@ -343,6 +343,44 @@ function PlayBoard({
     : null;
   const opponents = play.players.filter((p) => opponentIds.includes(p.id));
 
+  // Whole-table attach index. Auras/equipment may target any creature on the
+  // table — opp's Pacifism on your creature, your Control Magic on theirs, etc.
+  // Children are rendered next to their parent regardless of who cast them.
+  type OwnedBfTable = { b: BattlefieldCard; ownerId: string };
+  const allBfWithOwner: OwnedBfTable[] = play.players.flatMap((p) =>
+    p.battlefield.map((b) => ({ b, ownerId: p.id })),
+  );
+  const allFieldIds = new Set(
+    allBfWithOwner.map((o) => o.b.card.instanceId),
+  );
+  const childrenByParent = new Map<string, OwnedBfTable[]>();
+  for (const o of allBfWithOwner) {
+    if (o.b.attachedTo && allFieldIds.has(o.b.attachedTo)) {
+      const list = childrenByParent.get(o.b.attachedTo) ?? [];
+      list.push(o);
+      childrenByParent.set(o.b.attachedTo, list);
+    }
+  }
+  // Resolve caster identity → small dot color for shared-battlefield UX.
+  function casterDotFor(ownerId: string): {
+    casterDotClass?: string;
+    casterDotLabel?: string;
+  } {
+    if (!isTwoHeaded && ownerId === playerId) {
+      // 1v1 — no dots needed; everything in your zone is yours.
+      return {};
+    }
+    const ownerName =
+      play.players.find((p) => p.id === ownerId)?.name ?? "?";
+    if (ownerId === playerId) {
+      return { casterDotClass: "bg-cyan-400", casterDotLabel: `${me?.name ?? "you"}'s card` };
+    }
+    if (teammate && ownerId === teammate.id) {
+      return { casterDotClass: "bg-emerald-400", casterDotLabel: `${teammate.name}'s card` };
+    }
+    return { casterDotClass: "bg-rose-400", casterDotLabel: `${ownerName}'s card` };
+  }
+
   const [cardAction, setCardAction] = useState<CardActionTarget | null>(null);
   const [pile, setPile] = useState<PileTarget | null>(null);
   const [peek, setPeek] = useState<PeekTarget | null>(null);
@@ -367,6 +405,11 @@ function PlayBoard({
 
   function performAndClose(action: PlayAction) {
     send(action);
+    // Counter tweaks are inherently iterative ("+1, +1, +1, then close"),
+    // so keep the modal open for them. Every other action is terminal.
+    if (action.type === "setCounter" || action.type === "clearCounters") {
+      return;
+    }
     setCardAction(null);
     setPile(null);
   }
@@ -536,6 +579,10 @@ function PlayBoard({
               key={opp.id}
               player={opp}
               isCurrentTurn={match.currentTurnTeamIdx === oppTeamIdx}
+              childrenByParent={childrenByParent}
+              allFieldIds={allFieldIds}
+              casterDotFor={casterDotFor}
+              dragApi={dragApi}
               onCardPeek={(card, tapped, counters) =>
                 setPeek({ card, tapped, counters })
               }
@@ -567,9 +614,11 @@ function PlayBoard({
           teammate={teammate ?? null}
           priv={priv}
           isCurrentTurn={match.currentTurnTeamIdx === myTeamIdx}
+          childrenByParent={childrenByParent}
+          allFieldIds={allFieldIds}
+          casterDotFor={casterDotFor}
           onCardClick={onYourCardClick}
           onTeammateCardClick={(card, zone) => {
-            // Same modal flow, but we tag the card as teammate-owned by zone routing.
             onYourCardClick(card, zone);
           }}
           dragApi={dragApi}
@@ -719,11 +768,25 @@ function ResultOverlay({
 function OpponentArea({
   player,
   isCurrentTurn = false,
+  childrenByParent,
+  allFieldIds,
+  casterDotFor,
+  dragApi,
   onCardPeek,
   onPileClick,
 }: {
   player: PlayPublicPlayer;
   isCurrentTurn?: boolean;
+  /** Whole-table attach index built in PlayBoard. */
+  childrenByParent: Map<string, { b: BattlefieldCard; ownerId: string }[]>;
+  /** Set of every battlefield instanceId across the table. */
+  allFieldIds: Set<string>;
+  /** Resolves a casterDot styling for a given owner playerId. */
+  casterDotFor: (ownerId: string) => {
+    casterDotClass?: string;
+    casterDotLabel?: string;
+  };
+  dragApi: DragApi;
   onCardPeek: (
     card: DraftCard,
     tapped: boolean,
@@ -732,7 +795,14 @@ function OpponentArea({
   onPileClick: (zone: "graveyard" | "exile") => void;
 }) {
   const lands = player.battlefield.filter((b) => b.card.type === "land");
-  const nonLands = player.battlefield.filter((b) => b.card.type !== "land");
+  // Tops on this opp's battlefield: cards that don't have a parent anywhere.
+  // (A card whose parent lives on another zone is still rendered with its
+  // parent in that zone, not here.)
+  const nonLands = player.battlefield.filter(
+    (b) =>
+      b.card.type !== "land" &&
+      (!b.attachedTo || !allFieldIds.has(b.attachedTo)),
+  );
   const landGroups = new Map<string, typeof lands>();
   for (const b of lands) {
     const key = b.card.id;
@@ -780,41 +850,40 @@ function OpponentArea({
             {nonLands.length > 0 ? (
               <div className="flex flex-wrap gap-1">
                 {(() => {
-                  // Same parent/child treatment as YourArea: any card with
-                  // attachedTo gets stacked behind its parent so equipment
-                  // and auras visibly read as equipped/enchanted.
-                  const fieldIds = new Set(
-                    nonLands.map((b) => b.card.instanceId),
-                  );
-                  const childrenByParent = new Map<string, BattlefieldCard[]>();
-                  for (const b of nonLands) {
-                    if (b.attachedTo && fieldIds.has(b.attachedTo)) {
-                      const list = childrenByParent.get(b.attachedTo) ?? [];
-                      list.push(b);
-                      childrenByParent.set(b.attachedTo, list);
-                    }
-                  }
-                  const tops = nonLands.filter(
-                    (b) => !b.attachedTo || !fieldIds.has(b.attachedTo),
-                  );
-                  // Compact-xs card is w-20 h-28 (80×112). Use a smaller
-                  // offset than the YourArea md cards.
+                  // Compact-xs card is w-20 h-28 (80×112).
                   const offset = 14;
-                  return tops.map((parent) => {
+                  return nonLands.map((parent) => {
                     const kids =
                       childrenByParent.get(parent.card.instanceId) ?? [];
+                    const isAttachTarget = dragApi.canAttachTo(parent.card);
+                    const renderParent = (
+                      <CompactCard
+                        card={parent.card}
+                        tapped={parent.tapped}
+                        counters={parent.counters}
+                        size="xs"
+                        highlight={isAttachTarget}
+                        onClick={() =>
+                          onCardPeek(parent.card, parent.tapped, parent.counters)
+                        }
+                        onDragOver={(e) => {
+                          if (dragApi.canAttachTo(parent.card)) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }
+                        }}
+                        onDrop={(e) => {
+                          if (dragApi.canAttachTo(parent.card)) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            dragApi.handleDropOnCard(parent.card.instanceId);
+                          }
+                        }}
+                      />
+                    );
                     if (kids.length === 0) {
                       return (
-                        <CompactCard
-                          key={parent.card.instanceId}
-                          card={parent.card}
-                          tapped={parent.tapped}
-                          counters={parent.counters}
-                          size="xs"
-                          onClick={() =>
-                            onCardPeek(parent.card, parent.tapped, parent.counters)
-                          }
-                        />
+                        <div key={parent.card.instanceId}>{renderParent}</div>
                       );
                     }
                     const w = 80 + kids.length * offset;
@@ -825,40 +894,41 @@ function OpponentArea({
                         className="relative"
                         style={{ width: w, height: h }}
                       >
-                        {kids.map((kid, i) => (
-                          <div
-                            key={kid.card.instanceId}
-                            className="absolute"
-                            style={{
-                              top: (i + 1) * offset,
-                              left: (i + 1) * offset,
-                              zIndex: i + 1,
-                            }}
-                          >
-                            <CompactCard
-                              card={kid.card}
-                              tapped={kid.tapped}
-                              counters={kid.counters}
-                              size="xs"
-                              onClick={() =>
-                                onCardPeek(kid.card, kid.tapped, kid.counters)
-                              }
-                            />
-                          </div>
-                        ))}
+                        {kids.map((kid, i) => {
+                          const dot = casterDotFor(kid.ownerId);
+                          return (
+                            <div
+                              key={kid.b.card.instanceId}
+                              className="absolute"
+                              style={{
+                                top: (i + 1) * offset,
+                                left: (i + 1) * offset,
+                                zIndex: i + 1,
+                              }}
+                            >
+                              <CompactCard
+                                card={kid.b.card}
+                                tapped={kid.b.tapped}
+                                counters={kid.b.counters}
+                                size="xs"
+                                casterDotClass={dot.casterDotClass}
+                                casterDotLabel={dot.casterDotLabel}
+                                onClick={() =>
+                                  onCardPeek(
+                                    kid.b.card,
+                                    kid.b.tapped,
+                                    kid.b.counters,
+                                  )
+                                }
+                              />
+                            </div>
+                          );
+                        })}
                         <div
                           className="absolute left-0 top-0"
                           style={{ zIndex: 100 }}
                         >
-                          <CompactCard
-                            card={parent.card}
-                            tapped={parent.tapped}
-                            counters={parent.counters}
-                            size="xs"
-                            onClick={() =>
-                              onCardPeek(parent.card, parent.tapped, parent.counters)
-                            }
-                          />
+                          {renderParent}
                         </div>
                       </div>
                     );
@@ -950,6 +1020,9 @@ function YourArea({
   teammate,
   priv,
   isCurrentTurn = false,
+  childrenByParent,
+  allFieldIds,
+  casterDotFor,
   onCardClick,
   dragApi,
   send,
@@ -959,6 +1032,13 @@ function YourArea({
   teammate?: PlayPublicPlayer | null;
   priv: PlayPrivateState;
   isCurrentTurn?: boolean;
+  /** Whole-table attach index; some children may be opp-owned (e.g., their Pacifism on your creature). */
+  childrenByParent: Map<string, { b: BattlefieldCard; ownerId: string }[]>;
+  allFieldIds: Set<string>;
+  casterDotFor: (ownerId: string) => {
+    casterDotClass?: string;
+    casterDotLabel?: string;
+  };
   onCardClick: (card: DraftCard, zone: Zone) => void;
   /** Optional handler for teammate-owned cards (defaults to onCardClick). */
   onTeammateCardClick?: (card: DraftCard, zone: Zone) => void;
@@ -982,7 +1062,14 @@ function YourArea({
       : []),
   ];
   const lands = combined.filter((o) => o.b.card.type === "land");
-  const nonLands = combined.filter((o) => o.b.card.type !== "land");
+  // Tops on this team's battlefield: nonland cards that don't have a parent
+  // anywhere on the table. (Cards attached to opp creatures are rendered in
+  // opp's zone instead.)
+  const nonLands = combined.filter(
+    (o) =>
+      o.b.card.type !== "land" &&
+      (!o.b.attachedTo || !allFieldIds.has(o.b.attachedTo)),
+  );
   // Group lands by (owner, card-id) so my Mountains stack separately from
   // teammate's Mountains.
   const landGroups = new Map<string, OwnedBf[]>();
@@ -993,24 +1080,17 @@ function YourArea({
     else landGroups.set(key, [o]);
   }
 
-  function casterDot(o: OwnedBf): { class?: string; label?: string } {
-    if (!teammate) return {}; // 1v1 — no need for dots
-    return o.isMine
-      ? { class: "bg-cyan-400", label: `${me.name}'s card` }
-      : { class: "bg-emerald-400", label: `${teammate.name}'s card` };
-  }
-
   function renderBattlefieldCard(o: OwnedBf) {
     const isAttachTarget = dragApi.canAttachTo(o.b.card);
-    const dot = casterDot(o);
+    const dot = casterDotFor(o.ownerId);
     return (
       <CompactCard
         card={o.b.card}
         tapped={o.b.tapped}
         counters={o.b.counters}
         size="md"
-        casterDotClass={dot.class}
-        casterDotLabel={dot.label}
+        casterDotClass={dot.casterDotClass}
+        casterDotLabel={dot.casterDotLabel}
         onClick={() =>
           send({
             type: "tap",
@@ -1085,25 +1165,19 @@ function YourArea({
                 </p>
               ) : (
                 (() => {
-                  const fieldIds = new Set(
-                    nonLands.map((o) => o.b.card.instanceId),
-                  );
-                  const childrenByParent = new Map<string, OwnedBf[]>();
-                  for (const o of nonLands) {
-                    if (o.b.attachedTo && fieldIds.has(o.b.attachedTo)) {
-                      const list =
-                        childrenByParent.get(o.b.attachedTo) ?? [];
-                      list.push(o);
-                      childrenByParent.set(o.b.attachedTo, list);
-                    }
-                  }
-                  const tops = nonLands.filter(
-                    (o) =>
-                      !o.b.attachedTo || !fieldIds.has(o.b.attachedTo),
-                  );
+                  // `nonLands` is already filtered to "tops" — cards parented
+                  // anywhere on the table were excluded above. Children come
+                  // from the whole-table index (passed in as a prop), which
+                  // can include opp-owned auras attached to your creature.
+                  const tops = nonLands;
                   return tops.map((parent) => {
-                    const kids =
+                    const kidsRaw =
                       childrenByParent.get(parent.b.card.instanceId) ?? [];
+                    const kids: OwnedBf[] = kidsRaw.map((k) => ({
+                      b: k.b,
+                      ownerId: k.ownerId,
+                      isMine: k.ownerId === me.id,
+                    }));
                     if (kids.length === 0) {
                       return (
                         <div
@@ -1166,15 +1240,15 @@ function YourArea({
                   {[...landGroups.entries()].map(([groupKey, group]) => (
                     <div key={groupKey} className="flex items-end">
                       {group.map((o, i) => {
-                        const dot = casterDot(o);
+                        const dot = casterDotFor(o.ownerId);
                         return (
                           <CompactCard
                             key={o.b.card.instanceId}
                             card={o.b.card}
                             tapped={o.b.tapped}
                             size="md"
-                            casterDotClass={dot.class}
-                            casterDotLabel={dot.label}
+                            casterDotClass={dot.casterDotClass}
+                            casterDotLabel={dot.casterDotLabel}
                             style={{ marginLeft: i === 0 ? 0 : "-7rem" }}
                             onClick={() =>
                               send({

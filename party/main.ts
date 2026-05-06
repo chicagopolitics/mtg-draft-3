@@ -801,6 +801,34 @@ export default class LobbyServer implements Party.Server {
       return null;
     };
 
+    /** Find which player anywhere in the match owns the given battlefield card. */
+    const findBattlefieldOwnerAnywhere = (
+      instanceId: string,
+    ): string | null => {
+      for (const tid of [...match.teams[0], ...match.teams[1]]) {
+        const ts = match.states[tid];
+        if (ts?.battlefield.some((b) => b.card.instanceId === instanceId)) {
+          return tid;
+        }
+      }
+      return null;
+    };
+
+    /**
+     * Clear any `attachedTo` references in the entire match that point to the
+     * given instanceId (the card just left a battlefield, so every aura/equip
+     * targeting it is now hanging in the air).
+     */
+    const scrubAttachedTo = (instanceId: string): void => {
+      for (const tid of [...match.teams[0], ...match.teams[1]]) {
+        const ts = match.states[tid];
+        if (!ts) continue;
+        for (const bf of ts.battlefield) {
+          if (bf.attachedTo === instanceId) bf.attachedTo = null;
+        }
+      }
+    };
+
     switch (action.type) {
       case "draw": {
         // Always your own deck.
@@ -909,16 +937,35 @@ export default class LobbyServer implements Party.Server {
         const ownerState = match.states[ownerId];
         const card = removeFromZone(ownerState, action.from, action.instanceId);
         if (!card) return;
+
+        // If the card just left a battlefield anywhere in the match, scrub
+        // every other card's attachedTo that pointed at it — including
+        // cross-team auras (e.g., your Pacifism on opp's creature that they
+        // just bounced).
+        if (action.from === "battlefield") {
+          scrubAttachedTo(action.instanceId);
+        }
+
+        // Validate cross-team attachedTo when placing back on a battlefield.
+        let validatedAttach: string | null = null;
+        if (action.to === "battlefield" && action.attachedTo) {
+          if (findBattlefieldOwnerAnywhere(action.attachedTo)) {
+            validatedAttach = action.attachedTo;
+          }
+        }
+
         placeInZone(
           ownerState,
           action.to,
           card,
           action.tapped ?? false,
-          action.attachedTo ?? null,
+          validatedAttach,
         );
         return;
       }
       case "setAttached": {
+        // Source aura must belong to the sender's team (you can't move an
+        // opponent's enchantment around).
         const ownerId = findBattlefieldOwner(action.instanceId);
         if (!ownerId) return;
         const ownerState = match.states[ownerId];
@@ -928,9 +975,11 @@ export default class LobbyServer implements Party.Server {
         if (!bf) return;
         if (action.targetInstanceId === action.instanceId) return;
         if (action.targetInstanceId) {
-          // Target may live on a different teammate's battlefield; just need
-          // it to exist somewhere on the sender's team.
-          const targetOwner = findBattlefieldOwner(action.targetInstanceId);
+          // Target can be on ANY battlefield in the match — your Pacifism
+          // can land on the opponent's creature.
+          const targetOwner = findBattlefieldOwnerAnywhere(
+            action.targetInstanceId,
+          );
           if (!targetOwner) return;
         }
         bf.attachedTo = action.targetInstanceId ?? null;
