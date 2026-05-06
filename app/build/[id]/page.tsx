@@ -19,6 +19,7 @@ import {
   totalLands,
 } from "@/lib/lobby/protocol";
 import type { Color, DraftCard } from "@/lib/cards/schema";
+import { suggestLandMix } from "@/lib/cards/landSuggest";
 import {
   getOrCreatePlayerId,
   getStoredPlayerName,
@@ -201,6 +202,12 @@ function Builder({
   function clearLands() {
     send({ type: "setBasicLands", counts: { ...ZERO_LANDS } });
   }
+  function suggestLands() {
+    // Limited heuristic: aim for MIN_DECK_SIZE total, distribute by pip
+    // proportion across the chosen nonland deck.
+    const counts = suggestLandMix(inDeck, MIN_DECK_SIZE);
+    send({ type: "setBasicLands", counts });
+  }
   function toggleReady() {
     send({ type: "setReady", ready: !meReady });
   }
@@ -260,8 +267,10 @@ function Builder({
 
       <BasicLandPanel
         counts={priv.basicLands}
+        deckSize={inDeck.length}
         bump={bumpLand}
         clear={clearLands}
+        suggest={suggestLands}
       />
 
       <DeckStats
@@ -404,26 +413,42 @@ function PlayerStrip({
 
 function BasicLandPanel({
   counts,
+  deckSize,
   bump,
   clear,
+  suggest,
 }: {
   counts: BasicLandCounts;
+  /** Number of cards in the deck list (excludes basics from the slider). */
+  deckSize: number;
   bump: (color: Color, delta: number) => void;
   clear: () => void;
+  suggest: () => void;
 }) {
+  const suggestedLands = Math.max(0, MIN_DECK_SIZE - deckSize);
   return (
     <section className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
-      <div className="mb-2 flex items-baseline justify-between">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
         <h2 className="text-xs uppercase tracking-wide text-zinc-500">
           basic lands ({totalLands(counts)} total)
         </h2>
-        <button
-          onClick={clear}
-          disabled={totalLands(counts) === 0}
-          className="text-xs text-zinc-500 underline disabled:opacity-30 hover:text-zinc-800 dark:hover:text-zinc-200"
-        >
-          clear
-        </button>
+        <div className="flex items-center gap-3 text-xs">
+          <button
+            onClick={suggest}
+            disabled={deckSize === 0}
+            className="rounded bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
+            title={`Distribute ${suggestedLands} basics across colors based on your deck's mana pip counts`}
+          >
+            suggest mix
+          </button>
+          <button
+            onClick={clear}
+            disabled={totalLands(counts) === 0}
+            className="text-zinc-500 underline disabled:opacity-30 hover:text-zinc-800 dark:hover:text-zinc-200"
+          >
+            clear
+          </button>
+        </div>
       </div>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
         {COLORS.map((c) => (
