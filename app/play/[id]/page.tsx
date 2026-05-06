@@ -41,6 +41,7 @@ type PileTarget = {
 type PeekTarget = {
   card: DraftCard;
   tapped?: boolean;
+  counters?: Record<string, number>;
 };
 
 type DropTarget = "hand" | "battlefield" | "graveyard";
@@ -55,6 +56,17 @@ type DragApi = {
   /** Drop the in-flight drag onto a battlefield card to attach. */
   handleDropOnCard: (targetInstanceId: string) => void;
 };
+
+/** Find a battlefield card on either teammate's side. */
+function findOnAllyBattlefield(
+  me: PlayPublicPlayer,
+  teammate: PlayPublicPlayer | null,
+  instanceId: string,
+): BattlefieldCard | undefined {
+  const onMine = me.battlefield.find((b) => b.card.instanceId === instanceId);
+  if (onMine) return onMine;
+  return teammate?.battlefield.find((b) => b.card.instanceId === instanceId);
+}
 
 function isValidDropMove(from: Zone, to: DropTarget): boolean {
   if (from === to) return false;
@@ -524,7 +536,9 @@ function PlayBoard({
               key={opp.id}
               player={opp}
               isCurrentTurn={match.currentTurnTeamIdx === oppTeamIdx}
-              onCardPeek={(card, tapped) => setPeek({ card, tapped })}
+              onCardPeek={(card, tapped, counters) =>
+                setPeek({ card, tapped, counters })
+              }
               onPileClick={(zone) => onOpponentPileClick(opp, zone)}
             />
           ))
@@ -574,17 +588,30 @@ function PlayBoard({
           target={cardAction}
           ownTapped={(() => {
             if (cardAction.zone !== "battlefield") return false;
-            const bf = me.battlefield.find(
-              (b) => b.card.instanceId === cardAction.card.instanceId,
+            const bf = findOnAllyBattlefield(
+              me,
+              teammate ?? null,
+              cardAction.card.instanceId,
             );
             return bf?.tapped ?? false;
           })()}
           isAttached={(() => {
             if (cardAction.zone !== "battlefield") return false;
-            const bf = me.battlefield.find(
-              (b) => b.card.instanceId === cardAction.card.instanceId,
+            const bf = findOnAllyBattlefield(
+              me,
+              teammate ?? null,
+              cardAction.card.instanceId,
             );
             return !!bf?.attachedTo;
+          })()}
+          counters={(() => {
+            if (cardAction.zone !== "battlefield") return undefined;
+            const bf = findOnAllyBattlefield(
+              me,
+              teammate ?? null,
+              cardAction.card.instanceId,
+            );
+            return bf?.counters;
           })()}
           onClose={() => setCardAction(null)}
           onAction={performAndClose}
@@ -697,7 +724,11 @@ function OpponentArea({
 }: {
   player: PlayPublicPlayer;
   isCurrentTurn?: boolean;
-  onCardPeek: (card: DraftCard, tapped: boolean) => void;
+  onCardPeek: (
+    card: DraftCard,
+    tapped: boolean,
+    counters?: Record<string, number>,
+  ) => void;
   onPileClick: (zone: "graveyard" | "exile") => void;
 }) {
   const lands = player.battlefield.filter((b) => b.card.type === "land");
@@ -748,15 +779,91 @@ function OpponentArea({
           <>
             {nonLands.length > 0 ? (
               <div className="flex flex-wrap gap-1">
-                {nonLands.map((b) => (
-                  <CompactCard
-                    key={b.card.instanceId}
-                    card={b.card}
-                    tapped={b.tapped}
-                    size="xs"
-                    onClick={() => onCardPeek(b.card, b.tapped)}
-                  />
-                ))}
+                {(() => {
+                  // Same parent/child treatment as YourArea: any card with
+                  // attachedTo gets stacked behind its parent so equipment
+                  // and auras visibly read as equipped/enchanted.
+                  const fieldIds = new Set(
+                    nonLands.map((b) => b.card.instanceId),
+                  );
+                  const childrenByParent = new Map<string, BattlefieldCard[]>();
+                  for (const b of nonLands) {
+                    if (b.attachedTo && fieldIds.has(b.attachedTo)) {
+                      const list = childrenByParent.get(b.attachedTo) ?? [];
+                      list.push(b);
+                      childrenByParent.set(b.attachedTo, list);
+                    }
+                  }
+                  const tops = nonLands.filter(
+                    (b) => !b.attachedTo || !fieldIds.has(b.attachedTo),
+                  );
+                  // Compact-xs card is w-20 h-28 (80×112). Use a smaller
+                  // offset than the YourArea md cards.
+                  const offset = 14;
+                  return tops.map((parent) => {
+                    const kids =
+                      childrenByParent.get(parent.card.instanceId) ?? [];
+                    if (kids.length === 0) {
+                      return (
+                        <CompactCard
+                          key={parent.card.instanceId}
+                          card={parent.card}
+                          tapped={parent.tapped}
+                          counters={parent.counters}
+                          size="xs"
+                          onClick={() =>
+                            onCardPeek(parent.card, parent.tapped, parent.counters)
+                          }
+                        />
+                      );
+                    }
+                    const w = 80 + kids.length * offset;
+                    const h = 112 + kids.length * offset;
+                    return (
+                      <div
+                        key={parent.card.instanceId}
+                        className="relative"
+                        style={{ width: w, height: h }}
+                      >
+                        {kids.map((kid, i) => (
+                          <div
+                            key={kid.card.instanceId}
+                            className="absolute"
+                            style={{
+                              top: (i + 1) * offset,
+                              left: (i + 1) * offset,
+                              zIndex: i + 1,
+                            }}
+                          >
+                            <CompactCard
+                              card={kid.card}
+                              tapped={kid.tapped}
+                              counters={kid.counters}
+                              size="xs"
+                              onClick={() =>
+                                onCardPeek(kid.card, kid.tapped, kid.counters)
+                              }
+                            />
+                          </div>
+                        ))}
+                        <div
+                          className="absolute left-0 top-0"
+                          style={{ zIndex: 100 }}
+                        >
+                          <CompactCard
+                            card={parent.card}
+                            tapped={parent.tapped}
+                            counters={parent.counters}
+                            size="xs"
+                            onClick={() =>
+                              onCardPeek(parent.card, parent.tapped, parent.counters)
+                            }
+                          />
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             ) : null}
             {lands.length > 0 ? (
@@ -776,7 +883,7 @@ function OpponentArea({
                         tapped={b.tapped}
                         size="xs"
                         style={{ marginLeft: i === 0 ? 0 : "-3.5rem" }}
-                        onClick={() => onCardPeek(b.card, b.tapped)}
+                        onClick={() => onCardPeek(b.card, b.tapped, b.counters)}
                       />
                     ))}
                   </div>
@@ -900,6 +1007,7 @@ function YourArea({
       <CompactCard
         card={o.b.card}
         tapped={o.b.tapped}
+        counters={o.b.counters}
         size="md"
         casterDotClass={dot.class}
         casterDotLabel={dot.label}
@@ -1099,44 +1207,52 @@ function YourArea({
         )}
       </section>
 
-      <section
-        onDragOver={(e) => {
-          if (dragApi.isValidDropFor("hand")) e.preventDefault();
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          dragApi.handleDrop("hand");
-        }}
-        className={`group/hand h-32 overflow-hidden rounded border-2 border-dashed bg-sky-50/40 px-2 pb-2 pt-2 transition-[height,padding] duration-300 hover:h-[28rem] hover:pt-12 focus-within:h-[28rem] focus-within:pt-12 dark:bg-sky-950/20 ${
-          handHighlight
-            ? "border-sky-500 bg-sky-100 dark:border-sky-400 dark:bg-sky-950/60"
-            : "border-sky-300 dark:border-sky-900/50"
-        }`}
-      >
-        <p className="mb-1 text-[10px] uppercase tracking-wide text-sky-700 dark:text-sky-400">
-          your hand ({priv.hand.length})
-          {handHighlight ? " · drop here" : ""}
-        </p>
-        {priv.hand.length === 0 ? (
-          <p className="p-2 text-xs text-zinc-500">empty.</p>
-        ) : (
-          <div className="flex items-start">
-            {priv.hand.map((c, i) => (
-              <button
-                key={c.instanceId}
-                onClick={() => onCardClick(c, "hand")}
-                draggable
-                onDragStart={(e) => dragApi.startDrag("hand", c, e)}
-                onDragEnd={dragApi.endDrag}
-                style={{ marginLeft: i === 0 ? 0 : "-10rem" }}
-                className="relative shrink-0 rounded transition-transform duration-150 hover:z-20 hover:-translate-y-8 hover:drop-shadow-2xl focus:z-20 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              >
-                <CardView card={c} />
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
+      {/*
+        The hand reserves a fixed slot at the bottom of YourArea (h-32).
+        On hover/focus the inner section absolutely overlays upward into the
+        battlefield area instead of pushing layout down past the viewport.
+        That keeps the bottom of the cards anchored to the screen edge.
+      */}
+      <div className="relative h-32 shrink-0">
+        <section
+          onDragOver={(e) => {
+            if (dragApi.isValidDropFor("hand")) e.preventDefault();
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            dragApi.handleDrop("hand");
+          }}
+          className={`group/hand absolute bottom-0 left-0 right-0 z-20 h-32 overflow-hidden rounded border-2 border-dashed bg-sky-50/95 px-2 pb-2 pt-2 transition-[height,padding] duration-300 hover:h-[26rem] hover:pt-12 focus-within:h-[26rem] focus-within:pt-12 dark:bg-sky-950/85 ${
+            handHighlight
+              ? "border-sky-500 bg-sky-100 dark:border-sky-400 dark:bg-sky-950"
+              : "border-sky-300 dark:border-sky-900/70"
+          }`}
+        >
+          <p className="mb-1 text-[10px] uppercase tracking-wide text-sky-700 dark:text-sky-400">
+            your hand ({priv.hand.length})
+            {handHighlight ? " · drop here" : ""}
+          </p>
+          {priv.hand.length === 0 ? (
+            <p className="p-2 text-xs text-zinc-500">empty.</p>
+          ) : (
+            <div className="flex items-start">
+              {priv.hand.map((c, i) => (
+                <button
+                  key={c.instanceId}
+                  onClick={() => onCardClick(c, "hand")}
+                  draggable
+                  onDragStart={(e) => dragApi.startDrag("hand", c, e)}
+                  onDragEnd={dragApi.endDrag}
+                  style={{ marginLeft: i === 0 ? 0 : "-10rem" }}
+                  className="relative shrink-0 rounded transition-transform duration-150 hover:z-20 hover:-translate-y-8 hover:drop-shadow-2xl focus:z-20 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <CardView card={c} />
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
     </div>
   );
 }
@@ -1350,6 +1466,12 @@ function UtilityButtons({
         </UtilBtn>
         <UtilBtn onClick={() => send({ type: "shuffleDeck" })}>shuffle</UtilBtn>
         <UtilBtn
+          onClick={() => send({ type: "untapAll", landsOnly: true })}
+        >
+          untap lands
+        </UtilBtn>
+        <UtilBtn onClick={() => send({ type: "untapAll" })}>untap all</UtilBtn>
+        <UtilBtn
           className="col-span-2"
           onClick={() => {
             if (confirm("Reset all zones, shuffle, draw 7?")) {
@@ -1392,12 +1514,15 @@ function CardActionModal({
   target,
   ownTapped,
   isAttached,
+  counters,
   onClose,
   onAction,
 }: {
   target: CardActionTarget;
   ownTapped: boolean;
   isAttached: boolean;
+  /** Current counter pile on this card (battlefield only). */
+  counters?: Record<string, number>;
   onClose: () => void;
   onAction: (action: PlayAction) => void;
 }) {
@@ -1482,6 +1607,25 @@ function CardActionModal({
               detach
             </ActionBtn>
           ) : null}
+          {zone === "battlefield" ? (
+            <CounterControls
+              counters={counters}
+              onChange={(kind, delta) =>
+                onAction({
+                  type: "setCounter",
+                  instanceId: card.instanceId,
+                  kind,
+                  delta,
+                })
+              }
+              onClear={() =>
+                onAction({
+                  type: "clearCounters",
+                  instanceId: card.instanceId,
+                })
+              }
+            />
+          ) : null}
           {moves.map((m) => (
             <ActionBtn
               key={m.label}
@@ -1501,6 +1645,116 @@ function CardActionModal({
         </div>
       </div>
     </ModalShell>
+  );
+}
+
+function CounterControls({
+  counters,
+  onChange,
+  onClear,
+}: {
+  counters?: Record<string, number>;
+  onChange: (kind: string, delta: number) => void;
+  onClear: () => void;
+}) {
+  const [customKind, setCustomKind] = useState("");
+  const standard: string[] = ["+1/+1", "-1/-1", "loyalty", "charge"];
+  const has = counters ?? {};
+  const otherKinds = Object.keys(has).filter((k) => !standard.includes(k));
+  return (
+    <div className="rounded border border-zinc-300 p-2 text-xs dark:border-zinc-700">
+      <div className="mb-1 flex items-center justify-between">
+        <p className="font-semibold uppercase tracking-wide text-zinc-500">
+          counters
+        </p>
+        {Object.keys(has).length > 0 ? (
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-[11px] text-zinc-500 underline-offset-2 hover:underline"
+          >
+            clear all
+          </button>
+        ) : null}
+      </div>
+      <div className="space-y-1">
+        {standard.map((kind) => (
+          <CounterRow
+            key={kind}
+            kind={kind}
+            count={has[kind] ?? 0}
+            onAdd={() => onChange(kind, 1)}
+            onSub={() => onChange(kind, -1)}
+          />
+        ))}
+        {otherKinds.map((kind) => (
+          <CounterRow
+            key={kind}
+            kind={kind}
+            count={has[kind]}
+            onAdd={() => onChange(kind, 1)}
+            onSub={() => onChange(kind, -1)}
+          />
+        ))}
+      </div>
+      <div className="mt-2 flex gap-1">
+        <input
+          type="text"
+          value={customKind}
+          onChange={(e) => setCustomKind(e.target.value)}
+          placeholder="custom (e.g., poison)"
+          maxLength={24}
+          className="min-w-0 flex-1 rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-800"
+        />
+        <button
+          type="button"
+          disabled={!customKind.trim()}
+          onClick={() => {
+            const k = customKind.trim();
+            if (!k) return;
+            onChange(k, 1);
+            setCustomKind("");
+          }}
+          className="rounded bg-emerald-600 px-2 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-40"
+        >
+          +1
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CounterRow({
+  kind,
+  count,
+  onAdd,
+  onSub,
+}: {
+  kind: string;
+  count: number;
+  onAdd: () => void;
+  onSub: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="min-w-0 flex-1 truncate font-mono">{kind}</span>
+      <button
+        type="button"
+        onClick={onSub}
+        disabled={count === 0}
+        className="h-6 w-6 rounded border border-zinc-300 text-xs hover:bg-zinc-100 disabled:opacity-30 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      >
+        −
+      </button>
+      <span className="w-6 text-center font-mono">{count}</span>
+      <button
+        type="button"
+        onClick={onAdd}
+        className="h-6 w-6 rounded border border-zinc-300 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      >
+        +
+      </button>
+    </div>
   );
 }
 
@@ -1614,14 +1868,30 @@ function PeekModal({
   target: PeekTarget;
   onClose: () => void;
 }) {
+  const counterEntries = target.counters
+    ? Object.entries(target.counters)
+    : [];
   return (
     <ModalShell title={target.card.name} subtitle="opponent card" onClose={onClose}>
       <div className="flex justify-center">
         <CardView card={target.card} />
       </div>
-      {target.tapped ? (
-        <p className="mt-3 text-center text-xs text-zinc-500">tapped</p>
-      ) : null}
+      <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs">
+        {target.tapped ? (
+          <span className="text-zinc-500">tapped</span>
+        ) : null}
+        {counterEntries.length > 0 ? (
+          <span className="text-zinc-500">counters:</span>
+        ) : null}
+        {counterEntries.map(([k, n]) => (
+          <span
+            key={k}
+            className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[11px] text-white"
+          >
+            {k} ×{n}
+          </span>
+        ))}
+      </div>
     </ModalShell>
   );
 }

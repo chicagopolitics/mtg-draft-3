@@ -93,11 +93,36 @@ export type ZoneTarget =
   | "graveyard"
   | "exile";
 
+/** Standard counter kinds with quick-action buttons in the UI. */
+export const STANDARD_COUNTERS = ["+1/+1", "-1/-1", "loyalty", "charge"] as const;
+
+/**
+ * Returns the net P/T delta from a card's counter pile. +1/+1 counters add to
+ * both, -1/-1 counters subtract. Other counter types don't affect stats.
+ */
+export function counterDelta(counters?: Record<string, number>): {
+  power: number;
+  toughness: number;
+} {
+  if (!counters) return { power: 0, toughness: 0 };
+  const plus = counters["+1/+1"] ?? 0;
+  const minus = counters["-1/-1"] ?? 0;
+  const d = plus - minus;
+  return { power: d, toughness: d };
+}
+
 export type BattlefieldCard = {
   card: DraftCard;
   tapped: boolean;
   /** instanceId of the parent card this is attached to (e.g., aura on creature). */
   attachedTo?: string | null;
+  /**
+   * Counter pile, keyed by canonical kind. Standard kinds:
+   *   "+1/+1", "-1/-1", "loyalty", "charge"
+   * Anything else is a free-form custom counter (e.g., "poison", "time").
+   * Counters are cleared when the card leaves the battlefield.
+   */
+  counters?: Record<string, number>;
 };
 
 export type PlayPublicPlayer = {
@@ -167,6 +192,20 @@ export type PlayAction =
   | { type: "shuffleDeck" }
   | { type: "newGame" }
   | { type: "tap"; instanceId: string; tapped: boolean }
+  | {
+      type: "untapAll";
+      /** When true, only untaps lands; otherwise untaps every permanent. */
+      landsOnly?: boolean;
+    }
+  | {
+      type: "setCounter";
+      instanceId: string;
+      /** Counter type, e.g., "+1/+1", "-1/-1", "loyalty", or any custom string. */
+      kind: string;
+      /** Positive = add, negative = remove. Counter is dropped when count <= 0. */
+      delta: number;
+    }
+  | { type: "clearCounters"; instanceId: string }
   | {
       type: "move";
       instanceId: string;

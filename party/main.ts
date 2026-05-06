@@ -110,6 +110,12 @@ type Loadout = {
   /** Cards drafted and chosen for the deck (excludes basics; basics are minted at game start). */
   deckCards: DraftCard[];
   basicLands: BasicLandCounts;
+  /**
+   * Basic-land Card definitions captured from the active set, keyed by color.
+   * Carries the Scryfall art the set had loaded — without this, basics minted
+   * for a player's deck fall back to the artless MOCK_SET defs.
+   */
+  basicLandDefs?: Partial<Record<Color, Card>>;
 };
 
 type MatchRuntime = {
@@ -654,6 +660,8 @@ export default class LobbyServer implements Party.Server {
 
   private transitionToMatching() {
     if (!this.deckbuild) return;
+    const sourceSet = this.customSet ?? MOCK_SET;
+    const basicDefs = basicLandDefsFromSet(sourceSet);
     const loadouts: Record<string, Loadout> = {};
     for (const pid of this.deckbuild.seatOrder) {
       const db = this.deckbuild.states[pid];
@@ -666,6 +674,7 @@ export default class LobbyServer implements Party.Server {
       loadouts[pid] = {
         deckCards: drafted,
         basicLands: { ...db.basicLands },
+        basicLandDefs: basicDefs,
       };
     }
     this.loadouts = loadouts;
@@ -847,6 +856,44 @@ export default class LobbyServer implements Party.Server {
         );
         if (!bf) return;
         bf.tapped = !!action.tapped;
+        return;
+      }
+      case "untapAll": {
+        // Only untaps the *sender's* permanents — teammates untap their own.
+        // (Real Magic's untap step is per-player; this matches that intuition.)
+        for (const bf of myState.battlefield) {
+          if (action.landsOnly && bf.card.type !== "land") continue;
+          bf.tapped = false;
+        }
+        return;
+      }
+      case "setCounter": {
+        const ownerId = findBattlefieldOwner(action.instanceId);
+        if (!ownerId) return;
+        const bf = match.states[ownerId].battlefield.find(
+          (b) => b.card.instanceId === action.instanceId,
+        );
+        if (!bf) return;
+        const kind = action.kind.trim().slice(0, 24);
+        if (!kind) return;
+        if (!bf.counters) bf.counters = {};
+        const next = (bf.counters[kind] ?? 0) + action.delta;
+        if (next <= 0) {
+          delete bf.counters[kind];
+          if (Object.keys(bf.counters).length === 0) bf.counters = undefined;
+        } else {
+          bf.counters[kind] = Math.min(99, next);
+        }
+        return;
+      }
+      case "clearCounters": {
+        const ownerId = findBattlefieldOwner(action.instanceId);
+        if (!ownerId) return;
+        const bf = match.states[ownerId].battlefield.find(
+          (b) => b.card.instanceId === action.instanceId,
+        );
+        if (!bf) return;
+        bf.counters = undefined;
         return;
       }
       case "move": {
@@ -1209,7 +1256,7 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 function freshGameState(loadout: Loadout): PlayingPlayerState {
-  const lands = mintBasicLands(loadout.basicLands);
+  const lands = mintBasicLands(loadout.basicLands, loadout.basicLandDefs);
   // Re-mint deck cards so a new game gets fresh instanceIds (avoids any stale
   // attachedTo references from prior games and prevents cross-game ID reuse).
   const reminted = mintDraftCards(loadout.deckCards.map(stripInstance));
@@ -1238,16 +1285,33 @@ function matchId(a: string, b: string): string {
     .slice(2, 7)}`;
 }
 
-function mintBasicLands(counts: BasicLandCounts): DraftCard[] {
-  const cards = [];
+function mintBasicLands(
+  counts: BasicLandCounts,
+  defs?: Partial<Record<Color, Card>>,
+): DraftCard[] {
+  const cards: Card[] = [];
   const colors: Color[] = ["W", "U", "B", "R", "G"];
   for (const color of colors) {
-    const id = BASIC_LAND_BY_COLOR[color];
-    const def = MOCK_SET.find((c) => c.id === id);
+    // Prefer the active-set definition (carries Scryfall art); fall back to
+    // MOCK_SET only if the active set didn't ship with this basic.
+    const def =
+      defs?.[color] ??
+      MOCK_SET.find((c) => c.id === BASIC_LAND_BY_COLOR[color]);
     if (!def) continue;
     for (let i = 0; i < counts[color]; i++) cards.push(def);
   }
   return mintDraftCards(cards);
+}
+
+/** Build a color → basic-land-Card map from the active set, falling back to MOCK_SET. */
+function basicLandDefsFromSet(set: Card[]): Partial<Record<Color, Card>> {
+  const out: Partial<Record<Color, Card>> = {};
+  const colors: Color[] = ["W", "U", "B", "R", "G"];
+  for (const color of colors) {
+    const id = BASIC_LAND_BY_COLOR[color];
+    out[color] = set.find((c) => c.id === id);
+  }
+  return out;
 }
 
 function shuffle<T>(arr: T[]): T[] {

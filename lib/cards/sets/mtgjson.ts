@@ -140,11 +140,20 @@ function convertCard(c: MtgJsonCard, idPrefix: string): Card | null {
           ? "uncommon"
           : "common";
 
+  // Build the canonical type line: "Legendary Artifact Land — Treasure"
+  const supertypes = c.supertypes ?? [];
+  const types = c.types ?? [];
+  const subtypes = c.subtypes ?? [];
+  const headPart = [...supertypes, ...types].join(" ");
+  const subtypePart = subtypes.join(" ");
+  const typeLine = subtypePart ? `${headPart} — ${subtypePart}` : headPart;
+
   return {
     id,
     name: c.name,
     type: primary,
-    subtype: (c.subtypes ?? []).join(" ") || undefined,
+    subtype: subtypePart || undefined,
+    typeLine: typeLine || undefined,
     colors,
     manaCost: c.manaCost ? parseManaCost(c.manaCost) : undefined,
     rarity,

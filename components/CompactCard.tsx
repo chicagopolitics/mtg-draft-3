@@ -1,3 +1,4 @@
+import { counterDelta } from "@/lib/lobby/protocol";
 import type { Color, DraftCard } from "@/lib/cards/schema";
 
 const COLOR_BG: Record<Color, string> = {
@@ -53,9 +54,12 @@ export function CompactCard({
   highlight,
   casterDotClass,
   casterDotLabel,
+  counters,
 }: {
   card: DraftCard;
   tapped?: boolean;
+  /** Counter pile for this battlefield card; modifies P/T and renders chips. */
+  counters?: Record<string, number>;
   onClick?: () => void;
   /** When set, renders a small ⋮ icon in the corner that opens secondary actions. */
   onMenu?: () => void;
@@ -171,13 +175,60 @@ export function CompactCard({
           </span>
         </div>
       )}
-      {card.type === "creature" &&
-      card.power !== undefined &&
-      card.toughness !== undefined ? (
-        <div className="mt-1 self-end rounded bg-zinc-900 px-1 font-mono text-[10px] text-white dark:bg-zinc-100 dark:text-zinc-900">
-          {card.power}/{card.toughness}
+      {(() => {
+        if (
+          card.type !== "creature" ||
+          card.power === undefined ||
+          card.toughness === undefined
+        ) {
+          return null;
+        }
+        const d = counterDelta(counters);
+        const modified = d.power !== 0 || d.toughness !== 0;
+        return (
+          <div
+            className={`mt-1 self-end rounded px-1 font-mono text-[10px] ${
+              modified
+                ? d.power > 0
+                  ? "bg-emerald-600 text-white"
+                  : "bg-rose-700 text-white"
+                : "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+            }`}
+            title={
+              modified
+                ? `Base ${card.power}/${card.toughness}, modified by counters`
+                : undefined
+            }
+          >
+            {card.power + d.power}/{card.toughness + d.toughness}
+          </div>
+        );
+      })()}
+      {counters && Object.keys(counters).length > 0 ? (
+        <div className="pointer-events-none absolute bottom-0.5 left-0.5 flex max-w-[80%] flex-wrap gap-0.5">
+          {Object.entries(counters).map(([kind, n]) => (
+            <span
+              key={kind}
+              className={`rounded px-1 text-[9px] font-bold leading-tight shadow-sm ring-1 ring-black/20 ${counterChipClass(kind)}`}
+              title={`${n} ${kind} counter${n === 1 ? "" : "s"}`}
+            >
+              {kind === "+1/+1"
+                ? `+${n}/+${n}`
+                : kind === "-1/-1"
+                  ? `-${n}/-${n}`
+                  : `${kind} ${n}`}
+            </span>
+          ))}
         </div>
       ) : null}
     </Wrapper>
   );
+}
+
+function counterChipClass(kind: string): string {
+  if (kind === "+1/+1") return "bg-emerald-500 text-white";
+  if (kind === "-1/-1") return "bg-rose-600 text-white";
+  if (kind === "loyalty") return "bg-violet-500 text-white";
+  if (kind === "charge") return "bg-amber-500 text-white";
+  return "bg-zinc-700 text-white";
 }

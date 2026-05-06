@@ -33,6 +33,12 @@ export const CardSchema = z.object({
   name: z.string().min(1).max(80),
   type: CardTypeSchema,
   subtype: z.string().max(80).optional(),
+  /**
+   * Full canonical type line (e.g., "Legendary Artifact Creature — Golem")
+   * built from MTGJSON's supertypes + types + subtypes. Falls back to a
+   * derived form when omitted (LLM cards / mock set).
+   */
+  typeLine: z.string().max(120).optional(),
   colors: z.array(ColorSchema).max(5),
   manaCost: ManaCostSchema.optional(),
   rarity: RaritySchema,

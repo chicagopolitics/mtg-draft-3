@@ -403,8 +403,11 @@ export function CardView({ card }: { card: Card }) {
       <ArtPlaceholder card={card} />
 
       <div className="flex shrink-0 items-center justify-between text-xs">
-        <span className="truncate text-zinc-700 dark:text-zinc-300">
-          {card.subtype ?? cardTypeLabel(card.type)}
+        <span
+          className="truncate text-zinc-700 dark:text-zinc-300"
+          title={fullTypeLine(card)}
+        >
+          {fullTypeLine(card)}
         </span>
         <span
           className={`shrink-0 font-mono font-semibold ${RARITY_LABEL_COLOR[card.rarity]}`}
@@ -431,4 +434,15 @@ export function CardView({ card }: { card: Card }) {
 
 function cardTypeLabel(t: Card["type"]): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/**
+ * Returns the canonical type line (e.g., "Artifact Land — Treasure"). Prefers
+ * the full `typeLine` from MTGJSON when available; falls back to building one
+ * from primary type + subtype for LLM/mock cards.
+ */
+export function fullTypeLine(card: Card): string {
+  if (card.typeLine && card.typeLine.trim()) return card.typeLine;
+  const head = cardTypeLabel(card.type);
+  return card.subtype ? `${head} — ${card.subtype}` : head;
 }
