@@ -850,8 +850,9 @@ function OpponentArea({
             {nonLands.length > 0 ? (
               <div className="flex flex-wrap gap-1">
                 {(() => {
-                  // Compact-xs card is w-20 h-28 (80×112).
-                  const offset = 14;
+                  // Compact-xs card is w-20 h-28 (80×112). 18px reveals the
+                  // name strip on each child stacked above the parent.
+                  const offset = 18;
                   return nonLands.map((parent) => {
                     const kids =
                       childrenByParent.get(parent.card.instanceId) ?? [];
@@ -886,7 +887,7 @@ function OpponentArea({
                         <div key={parent.card.instanceId}>{renderParent}</div>
                       );
                     }
-                    const w = 80 + kids.length * offset;
+                    const w = 80;
                     const h = 112 + kids.length * offset;
                     return (
                       <div
@@ -899,10 +900,9 @@ function OpponentArea({
                           return (
                             <div
                               key={kid.b.card.instanceId}
-                              className="absolute"
+                              className="absolute left-0"
                               style={{
-                                top: (i + 1) * offset,
-                                left: (i + 1) * offset,
+                                top: i * offset,
                                 zIndex: i + 1,
                               }}
                             >
@@ -925,8 +925,11 @@ function OpponentArea({
                           );
                         })}
                         <div
-                          className="absolute left-0 top-0"
-                          style={{ zIndex: 100 }}
+                          className="absolute left-0"
+                          style={{
+                            top: kids.length * offset,
+                            zIndex: 1000,
+                          }}
                         >
                           {renderParent}
                         </div>
@@ -1191,8 +1194,12 @@ function YourArea({
                         </div>
                       );
                     }
-                    const offset = 24;
-                    const w = 144 + kids.length * offset;
+                    // Stack children ABOVE the parent so each shows just its
+                    // title strip. Parent sits at the bottom of the stack
+                    // fully visible; each kid above peeks `offset` pixels.
+                    // ~28px reveals the name + a sliver of art on md cards.
+                    const offset = 28;
+                    const w = 144;
                     const h = 208 + kids.length * offset;
                     return (
                       <div
@@ -1203,10 +1210,9 @@ function YourArea({
                         {kids.map((kid, i) => (
                           <div
                             key={kid.b.card.instanceId}
-                            className="absolute"
+                            className="absolute left-0"
                             style={{
-                              top: (i + 1) * offset,
-                              left: (i + 1) * offset,
+                              top: i * offset,
                               zIndex: i + 1,
                             }}
                             onContextMenu={(e) => {
@@ -1218,8 +1224,11 @@ function YourArea({
                           </div>
                         ))}
                         <div
-                          className="absolute left-0 top-0"
-                          style={{ zIndex: 100 }}
+                          className="absolute left-0"
+                          style={{
+                            top: kids.length * offset,
+                            zIndex: 1000,
+                          }}
                           onContextMenu={(e) => {
                             e.preventDefault();
                             onCardClick(parent.b.card, "battlefield");
