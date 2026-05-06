@@ -6,9 +6,10 @@ const nextConfig: NextConfig = {
     root: import.meta.dirname,
   },
   // Bundle the Sets/ MTGJSON files into the serverless function tree so
-  // /api/sets/[code] can read them at runtime on Vercel.
+  // routes that read them work at runtime on Vercel.
   outputFileTracingIncludes: {
     "/api/sets/**/*": ["./Sets/**/*.json"],
+    "/api/cards/**/*": ["./Sets/**/*.json"],
   },
 };
 

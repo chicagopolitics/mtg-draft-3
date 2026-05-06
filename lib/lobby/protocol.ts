@@ -1,11 +1,26 @@
 import type { Card, Color, DraftCard } from "../cards/schema";
 
-export type Format = "booster";
+export type Format = "booster" | "sealed" | "constructed";
+
+export const FORMAT_LABEL: Record<Format, string> = {
+  booster: "Booster Draft",
+  sealed: "Sealed",
+  constructed: "Constructed",
+};
+
+export const FORMAT_DESCRIPTION: Record<Format, string> = {
+  booster: "Players take turns picking from rotating packs.",
+  sealed: "Each player opens their own packs and builds a deck — no drafting.",
+  constructed:
+    "Bring your own list. Paste a decklist (4-of allowed) drawn from the active set.",
+};
 
 export type LobbyConfig = {
   format: Format;
   maxPlayers: number;
   packsPerPlayer: number;
+  /** Default life total seeded into new matches; admin can override per-pairing. */
+  startingLife: number;
 };
 
 export type DraftDirection = "left" | "right";
@@ -114,27 +129,36 @@ export type BestOf = 1 | 3 | 5;
 
 export type MatchPublicState = {
   id: string;
-  playerIds: [string, string];
+  /** Two teams of 1+ players. Length-1 teams = classic 1v1; length-2 = 2HG. */
+  teams: [string[], string[]];
   bestOf: BestOf;
-  /** Wins per player in the current match. */
-  wins: Record<string, number>;
-  /** Live game state per player; same shape as PlayPublicState.players. */
+  /** Wins per team. */
+  wins: [number, number];
+  /** Starting life used at the start of each game in the match. */
+  startingLife: number;
+  /** Current life pool per team — 2HG teammates share one number. */
+  teamLife: [number, number];
+  /** Live game state for every player in the match (flat across both teams). */
   players: PlayPublicPlayer[];
   /** Game number within the match (1-based). */
   gameNumber: number;
   status: "active" | "complete";
-  matchWinner: string | null;
-  /** When set, current game is over and waiting for admin/players to advance. */
-  currentGameWinner: string | null;
-  /** Whose turn it is in the current game. Cosmetic only — no rule enforcement. */
-  currentTurnPlayerId: string;
+  /** Index (0 or 1) of the team that won the match, or null while ongoing. */
+  matchWinner: number | null;
+  /** Index (0 or 1) of the team that won the current game, or null. */
+  currentGameWinner: number | null;
+  /** Index (0 or 1) of the team whose turn it is. Cosmetic only. */
+  currentTurnTeamIdx: number;
   /** Turn number within the current game (1-based). */
   turnNumber: number;
 };
 
 export type MatchPairing = {
-  playerIds: [string, string];
+  /** Two teams of 1 (1v1) or 2 (2HG) player ids. */
+  teams: [string[], string[]];
   bestOf: BestOf;
+  /** Starting life pool per team for this match. */
+  startingLife: number;
 };
 
 export type PlayAction =
@@ -164,19 +188,53 @@ export const DEFAULT_CONFIG: LobbyConfig = {
   format: "booster",
   maxPlayers: 8,
   packsPerPlayer: 3,
+  startingLife: 20,
+};
+
+/** Sensible default pack count when switching to a given format. */
+export const DEFAULT_PACKS_FOR_FORMAT: Record<Format, number> = {
+  booster: 3,
+  sealed: 6,
+  // Constructed doesn't actually use packs, but the field is kept on
+  // LobbyConfig for shape-stability; preserve a sane value.
+  constructed: 0,
 };
 
 export const CONFIG_BOUNDS = {
   maxPlayers: { min: 2, max: 8 },
-  packsPerPlayer: { min: 1, max: 6 },
+  packsPerPlayer: { min: 1, max: 12 },
+  startingLife: { min: 1, max: 99 },
 } as const;
 
 export type LobbyPhase =
   | "waiting"
   | "drafting"
   | "deckbuilding"
+  | "constructing"
   | "matching"
   | "playing";
+
+/** Public construct state — visible to all players. */
+export type ConstructPublicState = {
+  players: Array<{
+    id: string;
+    name: string;
+    deckSize: number;
+    ready: boolean;
+    connected: boolean;
+  }>;
+};
+
+/** Result of parsing one player's pasted decklist against the active set. */
+export type ConstructPrivateState = {
+  /** The raw text the player has typed (echoed back so reconnects don't lose it). */
+  decklist: string;
+  /** Total cards in the parsed deck. */
+  deckSize: number;
+  /** Lines the parser couldn't match against the set. */
+  warnings: string[];
+  ready: boolean;
+};
 
 export type LobbyPlayer = {
   id: string;
@@ -192,6 +250,7 @@ export type LobbyState = {
   players: LobbyPlayer[];
   draft: DraftPublicState | null;
   deckbuild: DeckbuildPublicState | null;
+  construct: ConstructPublicState | null;
   play: PlayPublicState | null;
   /** When in matching/playing phases, the current set of matches. */
   matches: MatchPublicState[] | null;
@@ -210,6 +269,15 @@ export type ClientMessage =
   | { type: "pick"; instanceId: string }
   | { type: "setDeck"; deck: string[] }
   | { type: "setBasicLands"; counts: BasicLandCounts }
+  | {
+      type: "setConstructDeck";
+      /** Echoed back to clients on reconnect so they don't lose their typing. */
+      decklist: string;
+      /** Already-resolved cards from the client's cross-set library lookup. */
+      cards: DraftCard[];
+      /** Parser warnings to surface in the UI. */
+      warnings: string[];
+    }
   | { type: "setReady"; ready: boolean }
   | { type: "startPlay" }
   | { type: "playAction"; action: PlayAction }
@@ -226,20 +294,28 @@ export type ServerMessage =
       state: LobbyState;
       draftPrivate: DraftPrivateState | null;
       deckbuildPrivate: DeckbuildPrivateState | null;
+      constructPrivate: ConstructPrivateState | null;
       playPrivate: PlayPrivateState | null;
     }
   | { type: "error"; message: string }
   | { type: "rejected"; reason: "lobby-full" | "lobby-in-progress" };
 
 export function clampConfig(c: LobbyConfig): LobbyConfig {
-  const { maxPlayers, packsPerPlayer } = CONFIG_BOUNDS;
+  const { maxPlayers, packsPerPlayer, startingLife } = CONFIG_BOUNDS;
+  const format: Format =
+    c.format === "sealed" || c.format === "constructed" ? c.format : "booster";
   return {
-    format: "booster",
+    format,
     maxPlayers: clamp(c.maxPlayers, maxPlayers.min, maxPlayers.max),
     packsPerPlayer: clamp(
       c.packsPerPlayer,
       packsPerPlayer.min,
       packsPerPlayer.max,
+    ),
+    startingLife: clamp(
+      c.startingLife ?? 20,
+      startingLife.min,
+      startingLife.max,
     ),
   };
 }

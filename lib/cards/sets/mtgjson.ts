@@ -181,8 +181,11 @@ function parseManaCost(s: string): ManaCost {
     const inner = tok.slice(1, -1);
     if (/^\d+$/.test(inner)) {
       cost.generic += parseInt(inner, 10);
-    } else if (/^[XYZ]$/.test(inner)) {
-      // variable cost — count as 0 for our schema
+    } else if (inner === "X") {
+      cost.variable += 1;
+    } else if (/^[YZ]$/.test(inner)) {
+      // Y/Z (extremely rare, e.g., Unhinged) — treat like X.
+      cost.variable += 1;
     } else if (/^[WUBRG]$/.test(inner)) {
       cost[inner as Color] += 1;
     } else if (/^[WUBRG]\/P$/.test(inner)) {

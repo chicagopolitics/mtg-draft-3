@@ -7,11 +7,27 @@ import usePartySocket from "partysocket/react";
 import { getPartykitHost } from "@/lib/partykit-client";
 import {
   type ClientMessage,
+  type Format,
   type LobbyState,
   type ServerMessage,
   CONFIG_BOUNDS,
+  DEFAULT_PACKS_FOR_FORMAT,
+  FORMAT_DESCRIPTION,
+  FORMAT_LABEL,
   isValidLobbyId,
 } from "@/lib/lobby/protocol";
+
+function startButtonLabel(format: Format): string {
+  if (format === "sealed") return "open sealed pools";
+  if (format === "constructed") return "open deck builders";
+  return "start draft";
+}
+
+function startButtonHint(format: Format): string {
+  if (format === "sealed") return "Open sealed pools";
+  if (format === "constructed") return "Send everyone to the constructed builder";
+  return "Start the draft";
+}
 import type { Card } from "@/lib/cards/schema";
 import {
   getOrCreatePlayerId,
@@ -180,6 +196,8 @@ function LobbyConnected({
           router.push(`/draft/${lobbyId}`);
         } else if (msg.state.phase === "deckbuilding") {
           router.push(`/build/${lobbyId}`);
+        } else if (msg.state.phase === "constructing") {
+          router.push(`/construct/${lobbyId}`);
         } else if (msg.state.phase === "matching") {
           router.push(`/match/${lobbyId}`);
         } else if (msg.state.phase === "playing") {
@@ -604,6 +622,44 @@ function LobbyConnected({
           <h2 className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
             settings {me?.isAdmin ? "" : "(admin only)"}
           </h2>
+
+          <div className="mb-3">
+            <p className="mb-1 text-xs text-zinc-500">format</p>
+            <div className="flex flex-wrap gap-2">
+              {(Object.keys(FORMAT_LABEL) as Format[]).map((f) => {
+                const active = (state?.config.format ?? "booster") === f;
+                return (
+                  <button
+                    key={f}
+                    type="button"
+                    disabled={!me?.isAdmin}
+                    onClick={() =>
+                      send({
+                        type: "updateConfig",
+                        config: {
+                          format: f,
+                          packsPerPlayer: DEFAULT_PACKS_FOR_FORMAT[f],
+                        },
+                      })
+                    }
+                    className={`rounded border px-3 py-1 text-sm transition ${
+                      active
+                        ? "border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                    } disabled:cursor-not-allowed disabled:opacity-40`}
+                  >
+                    {FORMAT_LABEL[f]}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[11px] text-zinc-500">
+              {FORMAT_DESCRIPTION[
+                (state?.config.format ?? "booster") as Format
+              ]}
+            </p>
+          </div>
+
           <div className="grid gap-3 sm:grid-cols-2">
             <ConfigSlider
               label="max players"
@@ -615,20 +671,33 @@ function LobbyConnected({
                 send({ type: "updateConfig", config: { maxPlayers: v } })
               }
             />
+            {(state?.config.format ?? "booster") !== "constructed" ? (
+              <ConfigSlider
+                label={
+                  (state?.config.format ?? "booster") === "sealed"
+                    ? "packs per player (sealed pool)"
+                    : "packs per player (draft rounds)"
+                }
+                value={state?.config.packsPerPlayer ?? 3}
+                min={CONFIG_BOUNDS.packsPerPlayer.min}
+                max={CONFIG_BOUNDS.packsPerPlayer.max}
+                disabled={!me?.isAdmin}
+                onChange={(v) =>
+                  send({ type: "updateConfig", config: { packsPerPlayer: v } })
+                }
+              />
+            ) : null}
             <ConfigSlider
-              label="packs per player"
-              value={state?.config.packsPerPlayer ?? 3}
-              min={CONFIG_BOUNDS.packsPerPlayer.min}
-              max={CONFIG_BOUNDS.packsPerPlayer.max}
+              label="starting life (per team — 30 is typical for 2HG)"
+              value={state?.config.startingLife ?? 20}
+              min={CONFIG_BOUNDS.startingLife.min}
+              max={CONFIG_BOUNDS.startingLife.max}
               disabled={!me?.isAdmin}
               onChange={(v) =>
-                send({ type: "updateConfig", config: { packsPerPlayer: v } })
+                send({ type: "updateConfig", config: { startingLife: v } })
               }
             />
           </div>
-          <p className="mt-3 text-xs text-zinc-500">
-            format: booster draft (more formats coming)
-          </p>
         </section>
 
         {me?.isAdmin ? (
@@ -638,15 +707,15 @@ function LobbyConnected({
             className="rounded bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
             title={
               canStart
-                ? "Start the draft"
+                ? startButtonHint(state?.config.format ?? "booster")
                 : "Need at least 2 connected players"
             }
           >
-            start draft
+            {startButtonLabel(state?.config.format ?? "booster")}
           </button>
         ) : (
           <p className="text-center text-xs text-zinc-500">
-            waiting for the admin to start the draft…
+            waiting for the admin to start…
           </p>
         )}
 

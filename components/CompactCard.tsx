@@ -8,6 +8,30 @@ const COLOR_BG: Record<Color, string> = {
   G: "from-emerald-100 to-emerald-400",
 };
 
+const FRAME_BG: Record<Color, { from: string; to: string }> = {
+  W: { from: "from-yellow-100/70 dark:from-yellow-200/15", to: "to-amber-200/60 dark:to-amber-300/10" },
+  U: { from: "from-sky-200/70 dark:from-sky-400/20", to: "to-sky-400/60 dark:to-blue-600/15" },
+  B: { from: "from-zinc-400/70 dark:from-zinc-500/30", to: "to-zinc-600/70 dark:to-zinc-800/40" },
+  R: { from: "from-rose-200/70 dark:from-rose-400/20", to: "to-red-400/60 dark:to-red-600/15" },
+  G: { from: "from-emerald-200/70 dark:from-emerald-400/20", to: "to-green-400/60 dark:to-green-600/15" },
+};
+
+function frameClasses(card: DraftCard): string {
+  if (card.type === "land" && card.colors.length === 0) {
+    return "from-amber-300/50 to-stone-400/60 dark:from-amber-700/15 dark:to-stone-700/20";
+  }
+  if (card.colors.length === 0) {
+    return "from-zinc-200/60 to-zinc-300/60 dark:from-zinc-600/15 dark:to-zinc-700/15";
+  }
+  if (card.colors.length === 1) {
+    const f = FRAME_BG[card.colors[0]];
+    return `${f.from} ${f.to}`;
+  }
+  const a = FRAME_BG[card.colors[0]];
+  const b = FRAME_BG[card.colors[card.colors.length - 1]];
+  return `${a.from} ${b.to}`;
+}
+
 /**
  * A small card preview used for opponent battlefields and pile peeks.
  * Shows name, color tint, and tapped state (rotated 90°).
@@ -27,6 +51,8 @@ export function CompactCard({
   onDragOver,
   onDrop,
   highlight,
+  casterDotClass,
+  casterDotLabel,
 }: {
   card: DraftCard;
   tapped?: boolean;
@@ -44,6 +70,14 @@ export function CompactCard({
   onDrop?: (e: React.DragEvent) => void;
   /** When true, draws an emerald drop-target ring (e.g., valid attach target). */
   highlight?: boolean;
+  /**
+   * Optional small dot in the top-left corner identifying the card's caster.
+   * Used in 2HG to distinguish your cards from your teammate's on a shared
+   * battlefield. Pass any Tailwind bg-color class string.
+   */
+  casterDotClass?: string;
+  /** Tooltip for the caster dot. */
+  casterDotLabel?: string;
 }) {
   const dims =
     size === "xs"
@@ -78,7 +112,7 @@ export function CompactCard({
       onDragOver={onDragOver}
       onDrop={onDrop}
       style={style}
-      className={`${dims} relative flex shrink-0 transform-gpu flex-col rounded bg-white p-1 text-left text-zinc-900 shadow-sm transition dark:bg-zinc-900 dark:text-zinc-100 ${
+      className={`${dims} relative flex shrink-0 transform-gpu flex-col rounded bg-white bg-gradient-to-br p-1 text-left text-zinc-900 shadow-sm transition dark:bg-zinc-900 dark:text-zinc-100 ${frameClasses(card)} ${
         highlight
           ? "ring-2 ring-emerald-500"
           : "ring-1 ring-black/10"
@@ -87,6 +121,13 @@ export function CompactCard({
       } ${onClick ? "hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-500" : ""} ${className}`}
       title={card.name}
     >
+      {casterDotClass ? (
+        <span
+          aria-label={casterDotLabel}
+          title={casterDotLabel}
+          className={`pointer-events-none absolute left-0.5 top-0.5 z-10 h-2 w-2 rounded-full ring-1 ring-white/70 dark:ring-black/40 ${casterDotClass}`}
+        />
+      ) : null}
       {onMenu ? (
         <span
           role="button"

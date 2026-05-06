@@ -93,6 +93,8 @@ function MatchConnected({
           router.push(`/draft/${lobbyId}`);
         else if (msg.state.phase === "deckbuilding")
           router.push(`/build/${lobbyId}`);
+        else if (msg.state.phase === "constructing")
+          router.push(`/construct/${lobbyId}`);
         else if (msg.state.phase === "playing")
           router.push(`/play/${lobbyId}`);
       } else if (msg.type === "error") {
@@ -118,7 +120,12 @@ function MatchConnected({
   );
 }
 
-type DraftPair = { a: string; b: string; bestOf: BestOf };
+type DraftPair = {
+  /** Each team is an array of player IDs (1 entry = 1v1, 2 entries = 2HG). */
+  teams: [string[], string[]];
+  bestOf: BestOf;
+  startingLife: number;
+};
 
 function MatchSetup({
   lobby,
@@ -134,26 +141,28 @@ function MatchSetup({
   const me = lobby.players.find((p) => p.id === playerId);
   const isAdmin = me?.isAdmin ?? false;
 
-  // Players eligible for matching = anyone with a loadout. The server tells us
-  // who is "unpaired" right now; in matching phase before any /startMatches
-  // that's everyone.
   const eligible = lobby.unpairedPlayerIds;
   const playerById = new Map(lobby.players.map((p) => [p.id, p]));
+  const defaultLife = lobby.config.startingLife ?? 20;
 
   const [pairs, setPairs] = useState<DraftPair[]>([]);
 
   const usedIds = new Set<string>();
   for (const p of pairs) {
-    usedIds.add(p.a);
-    usedIds.add(p.b);
+    for (const id of p.teams[0]) usedIds.add(id);
+    for (const id of p.teams[1]) usedIds.add(id);
   }
   const available = eligible.filter((id) => !usedIds.has(id));
 
-  function addPair() {
-    if (available.length < 2) return;
+  function addPair(twoHeaded: boolean) {
+    const need = twoHeaded ? 4 : 2;
+    if (available.length < need) return;
+    const teams: [string[], string[]] = twoHeaded
+      ? [[available[0], available[1]], [available[2], available[3]]]
+      : [[available[0]], [available[1]]];
     setPairs((ps) => [
       ...ps,
-      { a: available[0], b: available[1], bestOf: 1 },
+      { teams, bestOf: 1, startingLife: defaultLife },
     ]);
   }
 
@@ -167,8 +176,9 @@ function MatchSetup({
 
   function startMatches() {
     const pairings: MatchPairing[] = pairs.map((p) => ({
-      playerIds: [p.a, p.b],
+      teams: p.teams,
       bestOf: p.bestOf,
+      startingLife: p.startingLife,
     }));
     send({ type: "startMatches", pairings });
   }
@@ -180,12 +190,6 @@ function MatchSetup({
         <p className="text-sm text-zinc-500">
           They&apos;re setting up the match pairings.
         </p>
-        {lobby.players.find((p) => p.isAdmin && p.id === playerId) ? null : (
-          <p className="text-xs text-zinc-400">
-            Players in lobby:{" "}
-            {lobby.players.map((p) => p.name).join(", ") || "(none)"}
-          </p>
-        )}
       </Centered>
     );
   }
@@ -195,8 +199,8 @@ function MatchSetup({
       <header>
         <h1 className="text-2xl font-bold">Pair up the players</h1>
         <p className="text-sm text-zinc-500">
-          Pick who plays whom and pick a match length. Anyone you don&apos;t
-          include sits this round out and you can re-pair after.
+          Add 1-on-1 duels or two-headed-giant pods. Anyone you don&apos;t
+          include sits this round out — you can re-pair after.
         </p>
       </header>
 
@@ -224,14 +228,24 @@ function MatchSetup({
             onRemove={() => removePair(idx)}
           />
         ))}
-        <button
-          type="button"
-          onClick={addPair}
-          disabled={available.length < 2}
-          className="rounded border border-zinc-400 px-3 py-1 text-sm hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800"
-        >
-          + Add pairing
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => addPair(false)}
+            disabled={available.length < 2}
+            className="rounded border border-zinc-400 px-3 py-1 text-sm hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800"
+          >
+            + Add 1v1
+          </button>
+          <button
+            type="button"
+            onClick={() => addPair(true)}
+            disabled={available.length < 4}
+            className="rounded border border-zinc-400 px-3 py-1 text-sm hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800"
+          >
+            + Add 2HG (2v2)
+          </button>
+        </div>
       </section>
 
       <section className="space-y-1">
@@ -240,7 +254,7 @@ function MatchSetup({
         </h2>
         <p className="text-xs text-zinc-500">
           {available.length === 0
-            ? "(none — everyone&apos;s paired)"
+            ? "(none — everyone is paired)"
             : available
                 .map((id) => playerById.get(id)?.name ?? id.slice(0, 6))
                 .join(", ")}
@@ -276,37 +290,72 @@ function PairRow({
   onChange: (patch: Partial<DraftPair>) => void;
   onRemove: () => void;
 }) {
+  const isTeam = pair.teams[0].length > 1 || pair.teams[1].length > 1;
+
   function pickerOptions(currentId: string) {
     return allEligible.filter(
       (id) => id === currentId || !usedIds.has(id),
     );
   }
 
+  function setSlot(teamIdx: 0 | 1, slot: 0 | 1, newId: string) {
+    const teams: [string[], string[]] = [
+      pair.teams[0].slice(),
+      pair.teams[1].slice(),
+    ];
+    teams[teamIdx][slot] = newId;
+    onChange({ teams });
+  }
+
+  function renderSlot(teamIdx: 0 | 1, slot: 0 | 1) {
+    const id = pair.teams[teamIdx][slot];
+    if (id === undefined) return null;
+    return (
+      <select
+        key={`${teamIdx}-${slot}`}
+        value={id}
+        onChange={(e) => setSlot(teamIdx, slot, e.target.value)}
+        className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+      >
+        {pickerOptions(id).map((opt) => (
+          <option key={opt} value={opt}>
+            {playerById.get(opt)?.name ?? opt.slice(0, 6)}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-2 rounded border border-zinc-300 p-2 dark:border-zinc-700">
-      <select
-        value={pair.a}
-        onChange={(e) => onChange({ a: e.target.value })}
-        className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-      >
-        {pickerOptions(pair.a).map((id) => (
-          <option key={id} value={id}>
-            {playerById.get(id)?.name ?? id.slice(0, 6)}
-          </option>
-        ))}
-      </select>
+      {isTeam ? (
+        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+          2HG
+        </span>
+      ) : null}
+
+      <div className="flex items-center gap-1">
+        {renderSlot(0, 0)}
+        {pair.teams[0][1] !== undefined ? (
+          <>
+            <span className="text-xs text-zinc-500">+</span>
+            {renderSlot(0, 1)}
+          </>
+        ) : null}
+      </div>
+
       <span className="text-sm text-zinc-500">vs</span>
-      <select
-        value={pair.b}
-        onChange={(e) => onChange({ b: e.target.value })}
-        className="rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
-      >
-        {pickerOptions(pair.b).map((id) => (
-          <option key={id} value={id}>
-            {playerById.get(id)?.name ?? id.slice(0, 6)}
-          </option>
-        ))}
-      </select>
+
+      <div className="flex items-center gap-1">
+        {renderSlot(1, 0)}
+        {pair.teams[1][1] !== undefined ? (
+          <>
+            <span className="text-xs text-zinc-500">+</span>
+            {renderSlot(1, 1)}
+          </>
+        ) : null}
+      </div>
+
       <span className="ml-2 text-xs text-zinc-500">Best of</span>
       <select
         value={pair.bestOf}
@@ -319,6 +368,21 @@ function PairRow({
         <option value={3}>3</option>
         <option value={5}>5</option>
       </select>
+
+      <span className="text-xs text-zinc-500">Life</span>
+      <input
+        type="number"
+        min={1}
+        max={99}
+        value={pair.startingLife}
+        onChange={(e) =>
+          onChange({
+            startingLife: Math.max(1, Math.min(99, Number(e.target.value) || 1)),
+          })
+        }
+        className="w-16 rounded border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-600 dark:bg-zinc-800"
+      />
+
       <button
         type="button"
         onClick={onRemove}

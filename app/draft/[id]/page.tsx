@@ -99,6 +99,8 @@ function DraftConnected({
           router.push(`/lobby/${lobbyId}`);
         } else if (msg.state.phase === "deckbuilding") {
           router.push(`/build/${lobbyId}`);
+        } else if (msg.state.phase === "constructing") {
+          router.push(`/construct/${lobbyId}`);
         } else if (msg.state.phase === "matching") {
           router.push(`/match/${lobbyId}`);
         } else if (msg.state.phase === "playing") {

@@ -117,6 +117,8 @@ function BuildConnected({
           router.push(`/lobby/${lobbyId}`);
         } else if (msg.state.phase === "drafting") {
           router.push(`/draft/${lobbyId}`);
+        } else if (msg.state.phase === "constructing") {
+          router.push(`/construct/${lobbyId}`);
         } else if (msg.state.phase === "matching") {
           router.push(`/match/${lobbyId}`);
         } else if (msg.state.phase === "playing") {

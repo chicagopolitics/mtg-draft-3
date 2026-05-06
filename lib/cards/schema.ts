@@ -18,6 +18,8 @@ export type CardType = z.infer<typeof CardTypeSchema>;
 
 export const ManaCostSchema = z.object({
   generic: z.number().int().min(0).max(20),
+  /** Number of {X} variable-cost pips (e.g., {X}{X}{R} = 2). */
+  variable: z.number().int().min(0).max(5).default(0),
   W: z.number().int().min(0).max(10),
   U: z.number().int().min(0).max(10),
   B: z.number().int().min(0).max(10),
@@ -51,7 +53,10 @@ export const CardSetSchema = z.array(CardSchema).min(15);
 export type CardSet = z.infer<typeof CardSetSchema>;
 
 /** A card minted into a specific draft. instanceId distinguishes copies. */
-export type DraftCard = Card & { instanceId: string };
+export const DraftCardSchema = CardSchema.extend({
+  instanceId: z.string().min(1).max(64),
+});
+export type DraftCard = z.infer<typeof DraftCardSchema>;
 
 export function mintDraftCards(cards: Card[]): DraftCard[] {
   return cards.map((c) => ({ ...c, instanceId: mintInstanceId() }));
@@ -67,6 +72,7 @@ function mintInstanceId(): string {
 export function manaCost(parts: Partial<ManaCost>): ManaCost {
   return {
     generic: parts.generic ?? 0,
+    variable: parts.variable ?? 0,
     W: parts.W ?? 0,
     U: parts.U ?? 0,
     B: parts.B ?? 0,
@@ -75,6 +81,10 @@ export function manaCost(parts: Partial<ManaCost>): ManaCost {
   };
 }
 
+/**
+ * Sum of mana symbols, treating {X} as 0 (its real cost is determined when cast).
+ * Used for mana-curve bucketing and sorting.
+ */
 export function totalManaCost(cost: ManaCost): number {
   return cost.generic + cost.W + cost.U + cost.B + cost.R + cost.G;
 }

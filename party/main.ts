@@ -5,6 +5,7 @@ import {
   type Color,
   type DraftCard,
   CardSchema,
+  DraftCardSchema,
   mintDraftCards,
 } from "../lib/cards/schema";
 import { generatePack } from "../lib/cards/generator";
@@ -15,6 +16,8 @@ import {
   type BattlefieldCard,
   type BestOf,
   type ClientMessage,
+  type ConstructPrivateState,
+  type ConstructPublicState,
   type DeckbuildPrivateState,
   type DeckbuildPublicState,
   type DraftDirection,
@@ -46,7 +49,6 @@ const BASIC_LAND_BY_COLOR: Record<Color, string> = {
 };
 
 const STARTING_HAND = 7;
-const STARTING_LIFE = 20;
 
 type Player = {
   id: string;
@@ -82,13 +84,25 @@ type DeckbuildRuntime = {
   states: Record<string, DeckbuildPlayerState>;
 };
 
+type ConstructPlayerState = {
+  decklist: string;
+  /** Materialized & minted cards from the most recent successful parse. */
+  cards: DraftCard[];
+  warnings: string[];
+  ready: boolean;
+};
+
+type ConstructRuntime = {
+  seatOrder: string[];
+  states: Record<string, ConstructPlayerState>;
+};
+
 type PlayingPlayerState = {
   deck: DraftCard[];
   hand: DraftCard[];
   battlefield: BattlefieldCard[];
   graveyard: DraftCard[];
   exile: DraftCard[];
-  life: number;
 };
 
 /** A player's finished deckbuild — used to start fresh games of a match. */
@@ -100,19 +114,24 @@ type Loadout = {
 
 type MatchRuntime = {
   id: string;
-  playerIds: [string, string];
+  /** Two teams of 1+ players (1v1 = length 1; 2HG = length 2). */
+  teams: [string[], string[]];
   bestOf: BestOf;
-  wins: Record<string, number>;
+  wins: [number, number];
+  startingLife: number;
+  teamLife: [number, number];
   gameNumber: number;
+  /** Per-player game state — hand, deck, battlefield, etc. Life lives on the team. */
   states: Record<string, PlayingPlayerState>;
   status: "active" | "complete";
-  matchWinner: string | null;
-  /** When set, the current game has a winner and is awaiting `advanceGame`. */
-  currentGameWinner: string | null;
-  /** Cosmetic turn pointer; alternates on passTurn / resets on advanceGame. */
-  currentTurnPlayerId: string;
-  /** Whoever should start the next game (alternates per game). */
-  nextGameStarterId: string;
+  /** Index (0/1) of the team that won the match. */
+  matchWinner: number | null;
+  /** Index (0/1) of the team that won the current game. */
+  currentGameWinner: number | null;
+  /** Index (0/1) of the team whose turn it is. */
+  currentTurnTeamIdx: number;
+  /** Index (0/1) of the team that should start the next game. */
+  nextGameStarterTeamIdx: number;
   turnNumber: number;
 };
 
@@ -124,6 +143,7 @@ export default class LobbyServer implements Party.Server {
 
   private draft: DraftRuntime | null = null;
   private deckbuild: DeckbuildRuntime | null = null;
+  private construct: ConstructRuntime | null = null;
   /** Loadouts captured at end of deckbuild; used for every game in a player's matches. */
   private loadouts: Record<string, Loadout> | null = null;
   private matches: MatchRuntime[] | null = null;
@@ -161,7 +181,10 @@ export default class LobbyServer implements Party.Server {
         conn.close();
         return;
       }
-      const isFirstAdmin = !this.hasAdmin();
+      // Admin sticks to one player. New joiners are admin only when no admin
+      // exists at all (including disconnected) — this prevents a flood of
+      // admins when the original admin's tab is briefly absent.
+      const isFirstAdmin = !this.anyAdminExists();
       this.players.set(playerId, {
         id: playerId,
         name: requestedName?.trim() || `Guest-${playerId.slice(0, 4)}`,
@@ -171,7 +194,9 @@ export default class LobbyServer implements Party.Server {
     } else {
       existing.connId = conn.id;
       if (requestedName?.trim()) existing.name = requestedName.trim();
-      if (!this.hasAdmin()) existing.isAdmin = true;
+      // Reconnects do NOT auto-promote. Admin status is sticky across the
+      // session — a successor is only chosen in onClose when the admin leaves.
+      if (!this.anyAdminExists()) existing.isAdmin = true;
     }
 
     this.connToPlayer.set(conn.id, playerId);
@@ -186,7 +211,9 @@ export default class LobbyServer implements Party.Server {
     if (!player) return;
     player.connId = null;
 
-    if (player.isAdmin && this.phase === "waiting") {
+    // When the admin leaves, hand the role to a connected player so the lobby
+    // isn't stuck without one (admin-only actions like startMatches, etc.).
+    if (player.isAdmin) {
       const successor = [...this.players.values()].find(
         (p) => p.connId !== null && p.id !== player.id,
       );
@@ -243,12 +270,19 @@ export default class LobbyServer implements Party.Server {
           return;
         }
         try {
-          this.startDraft(connectedPlayers.map((p) => p.id));
+          const ids = connectedPlayers.map((p) => p.id);
+          if (this.config.format === "sealed") {
+            this.startSealed(ids);
+          } else if (this.config.format === "constructed") {
+            this.startConstructed(ids);
+          } else {
+            this.startDraft(ids);
+          }
           this.broadcastState();
         } catch (e) {
           this.send(sender, {
             type: "error",
-            message: `Couldn't start draft: ${e instanceof Error ? e.message : String(e)}`,
+            message: `Couldn't start: ${e instanceof Error ? e.message : String(e)}`,
           });
         }
         return;
@@ -277,19 +311,67 @@ export default class LobbyServer implements Party.Server {
         this.broadcastState();
         return;
       }
-      case "setReady": {
-        if (this.phase !== "deckbuilding" || !this.deckbuild) return;
-        const dbState = this.deckbuild.states[playerId];
-        if (!dbState) return;
-        dbState.ready = !!msg.ready;
+      case "setConstructDeck": {
+        if (this.phase !== "constructing" || !this.construct) return;
+        const cs = this.construct.states[playerId];
+        if (!cs) return;
+        // Constructed pulls from a cross-set library that lives in Next.js,
+        // so the client resolves the decklist locally and ships us the
+        // materialized cards. We just validate shape + cap counts.
+        const text = msg.decklist.slice(0, 20000);
+        const parsed = z
+          .array(DraftCardSchema)
+          .max(500)
+          .safeParse(msg.cards ?? []);
+        if (!parsed.success) {
+          this.send(sender, {
+            type: "error",
+            message: "Invalid deck payload",
+          });
+          return;
+        }
+        const warnings = (msg.warnings ?? [])
+          .filter((w) => typeof w === "string")
+          .slice(0, 50)
+          .map((w) => w.slice(0, 200));
+        cs.decklist = text;
+        cs.cards = parsed.data;
+        cs.warnings = warnings;
+        cs.ready = false;
         this.broadcastState();
+        return;
+      }
+      case "setReady": {
+        if (this.phase === "deckbuilding" && this.deckbuild) {
+          const dbState = this.deckbuild.states[playerId];
+          if (!dbState) return;
+          dbState.ready = !!msg.ready;
+          this.broadcastState();
+          return;
+        }
+        if (this.phase === "constructing" && this.construct) {
+          const cs = this.construct.states[playerId];
+          if (!cs) return;
+          // Ready only allowed if the deck is non-empty.
+          if (msg.ready && cs.cards.length === 0) return;
+          cs.ready = !!msg.ready;
+          this.broadcastState();
+          return;
+        }
         return;
       }
       case "startPlay": {
         if (!player.isAdmin) return;
-        if (this.phase !== "deckbuilding" || !this.deckbuild) return;
-        this.transitionToMatching();
-        this.broadcastState();
+        if (this.phase === "deckbuilding" && this.deckbuild) {
+          this.transitionToMatching();
+          this.broadcastState();
+          return;
+        }
+        if (this.phase === "constructing" && this.construct) {
+          this.transitionToMatchingFromConstruct();
+          this.broadcastState();
+          return;
+        }
         return;
       }
       case "startMatches": {
@@ -307,11 +389,12 @@ export default class LobbyServer implements Party.Server {
       }
       case "playAction": {
         if (this.phase !== "playing" || !this.matches) return;
-        const match = this.matches.find((m) =>
-          m.playerIds.includes(playerId),
+        const match = this.matches.find(
+          (m) => this.teamOf(m, playerId) >= 0,
         );
         if (!match) return;
-        if (match.status === "complete" || match.currentGameWinner) return;
+        if (match.status === "complete" || match.currentGameWinner !== null)
+          return;
         if (!match.states[playerId]) return;
         this.applyPlayAction(match, playerId, msg.action);
         this.broadcastState();
@@ -321,15 +404,17 @@ export default class LobbyServer implements Party.Server {
         if (this.phase !== "playing" || !this.matches) return;
         const match = this.matches.find((m) => m.id === msg.matchId);
         if (!match) return;
-        if (!match.playerIds.includes(playerId)) return;
-        if (match.status === "complete" || match.currentGameWinner) return;
-        const winner = match.playerIds.find((p) => p !== playerId)!;
-        match.currentGameWinner = winner;
-        match.wins[winner] = (match.wins[winner] ?? 0) + 1;
+        const teamIdx = this.teamOf(match, playerId);
+        if (teamIdx < 0) return;
+        if (match.status === "complete" || match.currentGameWinner !== null)
+          return;
+        const winnerIdx = teamIdx === 0 ? 1 : 0;
+        match.currentGameWinner = winnerIdx;
+        match.wins[winnerIdx] += 1;
         const needed = Math.ceil(match.bestOf / 2);
-        if (match.wins[winner] >= needed) {
+        if (match.wins[winnerIdx] >= needed) {
           match.status = "complete";
-          match.matchWinner = winner;
+          match.matchWinner = winnerIdx;
         }
         this.broadcastState();
         return;
@@ -338,17 +423,18 @@ export default class LobbyServer implements Party.Server {
         if (this.phase !== "playing" || !this.matches || !this.loadouts) return;
         const match = this.matches.find((m) => m.id === msg.matchId);
         if (!match) return;
-        if (!match.playerIds.includes(playerId) && !player.isAdmin) return;
+        const inMatch = this.teamOf(match, playerId) >= 0;
+        if (!inMatch && !player.isAdmin) return;
         if (match.status === "complete") return;
-        if (!match.currentGameWinner) return;
+        if (match.currentGameWinner === null) return;
         match.gameNumber += 1;
         match.currentGameWinner = null;
-        match.currentTurnPlayerId = match.nextGameStarterId;
-        match.nextGameStarterId = match.playerIds.find(
-          (p) => p !== match.nextGameStarterId,
-        )!;
+        match.currentTurnTeamIdx = match.nextGameStarterTeamIdx;
+        match.nextGameStarterTeamIdx =
+          match.nextGameStarterTeamIdx === 0 ? 1 : 0;
         match.turnNumber = 1;
-        for (const pid of match.playerIds) {
+        match.teamLife = [match.startingLife, match.startingLife];
+        for (const pid of [...match.teams[0], ...match.teams[1]]) {
           match.states[pid] = freshGameState(this.loadouts[pid]);
         }
         this.broadcastState();
@@ -358,12 +444,10 @@ export default class LobbyServer implements Party.Server {
         if (this.phase !== "playing" || !this.matches) return;
         const match = this.matches.find((m) => m.id === msg.matchId);
         if (!match) return;
-        if (!match.playerIds.includes(playerId)) return;
-        if (match.status === "complete" || match.currentGameWinner) return;
-        // Anyone in the pair can pass — usually the active player, but allow either.
-        match.currentTurnPlayerId = match.playerIds.find(
-          (p) => p !== match.currentTurnPlayerId,
-        )!;
+        if (this.teamOf(match, playerId) < 0) return;
+        if (match.status === "complete" || match.currentGameWinner !== null)
+          return;
+        match.currentTurnTeamIdx = match.currentTurnTeamIdx === 0 ? 1 : 0;
         match.turnNumber += 1;
         this.broadcastState();
         return;
@@ -431,6 +515,45 @@ export default class LobbyServer implements Party.Server {
       states,
     };
     this.phase = "drafting";
+  }
+
+  /**
+   * Constructed: skip drafting and deckbuilding's pool/picker entirely.
+   * Players paste a decklist in the constructing phase; admin starts matches
+   * once everyone is ready.
+   */
+  private startConstructed(playerIds: string[]) {
+    const seatOrder = shuffle(playerIds);
+    const states: Record<string, ConstructPlayerState> = {};
+    for (const pid of seatOrder) {
+      states[pid] = { decklist: "", cards: [], warnings: [], ready: false };
+    }
+    this.construct = { seatOrder, states };
+    this.phase = "constructing";
+  }
+
+  /**
+   * Sealed: skip drafting entirely. Each player opens `packsPerPlayer` packs
+   * straight into their deckbuild pool. No pick rotation, no shared packs.
+   */
+  private startSealed(playerIds: string[]) {
+    const seatOrder = shuffle(playerIds);
+    const sourceSet = this.customSet ?? MOCK_SET;
+    const states: Record<string, DeckbuildPlayerState> = {};
+    for (const pid of seatOrder) {
+      const pool: DraftCard[] = [];
+      for (let i = 0; i < this.config.packsPerPlayer; i++) {
+        pool.push(...mintDraftCards(generatePack(sourceSet)));
+      }
+      states[pid] = {
+        pool,
+        deck: [],
+        basicLands: { ...ZERO_LANDS },
+        ready: false,
+      };
+    }
+    this.deckbuild = { seatOrder, states };
+    this.phase = "deckbuilding";
   }
 
   private applyPick(playerId: string, instanceId: string) {
@@ -551,6 +674,26 @@ export default class LobbyServer implements Party.Server {
     this.phase = "matching";
   }
 
+  /**
+   * Constructed → matching. The pasted/parsed deck is the entire loadout —
+   * basics are written into the decklist itself, so basicLands is zeroed.
+   */
+  private transitionToMatchingFromConstruct() {
+    if (!this.construct) return;
+    const loadouts: Record<string, Loadout> = {};
+    for (const pid of this.construct.seatOrder) {
+      const cs = this.construct.states[pid];
+      loadouts[pid] = {
+        deckCards: cs.cards,
+        basicLands: { ...ZERO_LANDS },
+      };
+    }
+    this.loadouts = loadouts;
+    this.construct = null;
+    this.matches = null;
+    this.phase = "matching";
+  }
+
   private buildMatches(
     pairings: MatchPairing[],
   ):
@@ -562,36 +705,69 @@ export default class LobbyServer implements Party.Server {
     const seen = new Set<string>();
     const built: MatchRuntime[] = [];
     for (const p of pairings) {
-      const [a, b] = p.playerIds;
-      if (a === b) return { ok: false, message: "A player can't face themselves." };
-      if (!this.loadouts[a] || !this.loadouts[b])
-        return { ok: false, message: "Pairing references unknown player." };
-      if (seen.has(a) || seen.has(b))
-        return { ok: false, message: "A player appears in two pairings." };
-      seen.add(a);
-      seen.add(b);
-      const bestOf: BestOf = p.bestOf === 1 || p.bestOf === 3 || p.bestOf === 5
-        ? p.bestOf
-        : 1;
+      const teams = p.teams;
+      if (
+        !Array.isArray(teams) ||
+        teams.length !== 2 ||
+        !Array.isArray(teams[0]) ||
+        !Array.isArray(teams[1])
+      ) {
+        return { ok: false, message: "Pairing must have two teams." };
+      }
+      if (teams[0].length === 0 || teams[1].length === 0) {
+        return { ok: false, message: "Each team needs at least one player." };
+      }
+      if (teams[0].length > 2 || teams[1].length > 2) {
+        return { ok: false, message: "Teams cap at 2 players (2HG)." };
+      }
+      const allPlayers = [...teams[0], ...teams[1]];
+      const distinct = new Set(allPlayers);
+      if (distinct.size !== allPlayers.length) {
+        return { ok: false, message: "A player appears twice in a pairing." };
+      }
+      for (const pid of allPlayers) {
+        if (!this.loadouts[pid])
+          return { ok: false, message: "Pairing references unknown player." };
+        if (seen.has(pid))
+          return { ok: false, message: "A player appears in two pairings." };
+        seen.add(pid);
+      }
+      const bestOf: BestOf =
+        p.bestOf === 1 || p.bestOf === 3 || p.bestOf === 5 ? p.bestOf : 1;
+      const startingLife = clamp(
+        Math.floor(p.startingLife ?? this.config.startingLife),
+        1,
+        99,
+      );
+      const states: Record<string, PlayingPlayerState> = {};
+      for (const pid of allPlayers) {
+        states[pid] = freshGameState(this.loadouts[pid]);
+      }
       built.push({
-        id: matchId(a, b),
-        playerIds: [a, b],
+        id: matchId(allPlayers[0], allPlayers[allPlayers.length - 1]),
+        teams: [teams[0].slice(), teams[1].slice()],
         bestOf,
-        wins: { [a]: 0, [b]: 0 },
+        wins: [0, 0],
+        startingLife,
+        teamLife: [startingLife, startingLife],
         gameNumber: 1,
-        states: {
-          [a]: freshGameState(this.loadouts[a]),
-          [b]: freshGameState(this.loadouts[b]),
-        },
+        states,
         status: "active",
         matchWinner: null,
         currentGameWinner: null,
-        currentTurnPlayerId: a,
-        nextGameStarterId: b,
+        currentTurnTeamIdx: 0,
+        nextGameStarterTeamIdx: 1,
         turnNumber: 1,
       });
     }
     return { ok: true, matches: built };
+  }
+
+  /** Returns the team index (0 or 1) for a player in a match, or -1 if not on either. */
+  private teamOf(match: MatchRuntime, playerId: string): number {
+    if (match.teams[0].includes(playerId)) return 0;
+    if (match.teams[1].includes(playerId)) return 1;
+    return -1;
   }
 
   private applyPlayAction(
@@ -599,17 +775,33 @@ export default class LobbyServer implements Party.Server {
     playerId: string,
     action: PlayAction,
   ) {
-    const ps = match.states[playerId];
-    if (!ps) return;
+    const senderTeamIdx = this.teamOf(match, playerId);
+    if (senderTeamIdx < 0) return;
+    const myState = match.states[playerId];
+    if (!myState) return;
+    const teammates = match.teams[senderTeamIdx];
+
+    /** Find which player on the sender's team owns the given battlefield card. */
+    const findBattlefieldOwner = (instanceId: string): string | null => {
+      for (const tid of teammates) {
+        const ts = match.states[tid];
+        if (ts?.battlefield.some((b) => b.card.instanceId === instanceId)) {
+          return tid;
+        }
+      }
+      return null;
+    };
 
     switch (action.type) {
       case "draw": {
-        const count = Math.max(0, Math.min(action.count, ps.deck.length));
-        const drawn = ps.deck.splice(0, count);
-        ps.hand.push(...drawn);
+        // Always your own deck.
+        const count = Math.max(0, Math.min(action.count, myState.deck.length));
+        const drawn = myState.deck.splice(0, count);
+        myState.hand.push(...drawn);
         return;
       }
       case "mulligan": {
+        const ps = myState;
         const newSize = Math.max(0, ps.hand.length - 1);
         ps.deck.push(...ps.hand);
         ps.hand = [];
@@ -619,10 +811,13 @@ export default class LobbyServer implements Party.Server {
         return;
       }
       case "shuffleDeck": {
-        shuffleInPlace(ps.deck);
+        shuffleInPlace(myState.deck);
         return;
       }
       case "newGame": {
+        // Reset only the sender's pool — newGame is per-player. Team life is
+        // reset by `advanceGame` handler at the match level.
+        const ps = myState;
         const all: DraftCard[] = [
           ...ps.deck,
           ...ps.hand,
@@ -635,7 +830,6 @@ export default class LobbyServer implements Party.Server {
         ps.battlefield = [];
         ps.graveyard = [];
         ps.exile = [];
-        ps.life = STARTING_LIFE;
         shuffleInPlace(ps.deck);
         const drawn = ps.deck.splice(
           0,
@@ -645,7 +839,10 @@ export default class LobbyServer implements Party.Server {
         return;
       }
       case "tap": {
-        const bf = ps.battlefield.find(
+        // Allow tapping any teammate's card on the shared battlefield.
+        const ownerId = findBattlefieldOwner(action.instanceId);
+        if (!ownerId) return;
+        const bf = match.states[ownerId].battlefield.find(
           (b) => b.card.instanceId === action.instanceId,
         );
         if (!bf) return;
@@ -653,10 +850,20 @@ export default class LobbyServer implements Party.Server {
         return;
       }
       case "move": {
-        const card = removeFromZone(ps, action.from, action.instanceId);
+        // For battlefield-sourced moves, find the owner among teammates and
+        // operate on their state. For hand-sourced moves, only the sender's
+        // own hand is valid (private zone).
+        let ownerId = playerId;
+        if (action.from === "battlefield") {
+          const o = findBattlefieldOwner(action.instanceId);
+          if (!o) return;
+          ownerId = o;
+        }
+        const ownerState = match.states[ownerId];
+        const card = removeFromZone(ownerState, action.from, action.instanceId);
         if (!card) return;
         placeInZone(
-          ps,
+          ownerState,
           action.to,
           card,
           action.tapped ?? false,
@@ -665,26 +872,31 @@ export default class LobbyServer implements Party.Server {
         return;
       }
       case "setAttached": {
-        const bf = ps.battlefield.find(
+        const ownerId = findBattlefieldOwner(action.instanceId);
+        if (!ownerId) return;
+        const ownerState = match.states[ownerId];
+        const bf = ownerState.battlefield.find(
           (b) => b.card.instanceId === action.instanceId,
         );
         if (!bf) return;
         if (action.targetInstanceId === action.instanceId) return;
         if (action.targetInstanceId) {
-          const target = ps.battlefield.find(
-            (b) => b.card.instanceId === action.targetInstanceId,
-          );
-          if (!target) return;
+          // Target may live on a different teammate's battlefield; just need
+          // it to exist somewhere on the sender's team.
+          const targetOwner = findBattlefieldOwner(action.targetInstanceId);
+          if (!targetOwner) return;
         }
         bf.attachedTo = action.targetInstanceId ?? null;
         return;
       }
       case "adjustLife": {
-        ps.life = clampLife(ps.life + action.delta);
+        match.teamLife[senderTeamIdx] = clampLife(
+          match.teamLife[senderTeamIdx] + action.delta,
+        );
         return;
       }
       case "setLife": {
-        ps.life = clampLife(action.value);
+        match.teamLife[senderTeamIdx] = clampLife(action.value);
         return;
       }
     }
@@ -694,6 +906,11 @@ export default class LobbyServer implements Party.Server {
 
   private hasAdmin(): boolean {
     return [...this.players.values()].some((p) => p.isAdmin && p.connId);
+  }
+
+  /** True if any player carries the admin flag, even if currently disconnected. */
+  private anyAdminExists(): boolean {
+    return [...this.players.values()].some((p) => p.isAdmin);
   }
 
   private lobbySnapshot(): LobbyState {
@@ -709,6 +926,7 @@ export default class LobbyServer implements Party.Server {
       })),
       draft: this.draft ? this.draftPublicSnapshot() : null,
       deckbuild: this.deckbuild ? this.deckbuildPublicSnapshot() : null,
+      construct: this.construct ? this.constructPublicSnapshot() : null,
       play: null,
       matches: this.matches ? this.matchesPublicSnapshot() : null,
       unpairedPlayerIds: this.unpairedPlayerIds(),
@@ -724,7 +942,8 @@ export default class LobbyServer implements Party.Server {
     const inMatch = new Set<string>();
     if (this.matches) {
       for (const m of this.matches) {
-        for (const pid of m.playerIds) inMatch.add(pid);
+        for (const pid of m.teams[0]) inMatch.add(pid);
+        for (const pid of m.teams[1]) inMatch.add(pid);
       }
     }
     return all.filter((p) => !inMatch.has(p));
@@ -805,40 +1024,80 @@ export default class LobbyServer implements Party.Server {
     };
   }
 
-  private matchesPublicSnapshot(): MatchPublicState[] {
-    if (!this.matches) return [];
-    return this.matches.map((m) => ({
-      id: m.id,
-      playerIds: m.playerIds,
-      bestOf: m.bestOf,
-      wins: { ...m.wins },
-      gameNumber: m.gameNumber,
-      status: m.status,
-      matchWinner: m.matchWinner,
-      currentGameWinner: m.currentGameWinner,
-      currentTurnPlayerId: m.currentTurnPlayerId,
-      turnNumber: m.turnNumber,
-      players: m.playerIds.map((pid): PlayPublicPlayer => {
+  private constructPublicSnapshot(): ConstructPublicState {
+    if (!this.construct) throw new Error("no construct");
+    const ct = this.construct;
+    return {
+      players: ct.seatOrder.map((pid) => {
         const player = this.players.get(pid)!;
-        const ps = m.states[pid];
+        const cs = ct.states[pid];
         return {
           id: pid,
           name: player.name,
-          deckSize: ps.deck.length,
-          handSize: ps.hand.length,
-          battlefield: ps.battlefield,
-          graveyard: ps.graveyard,
-          exile: ps.exile,
-          life: ps.life,
+          deckSize: cs.cards.length,
+          ready: cs.ready,
           connected: player.connId !== null,
         };
       }),
-    }));
+    };
+  }
+
+  private constructPrivateFor(
+    playerId: string,
+  ): ConstructPrivateState | null {
+    if (!this.construct) return null;
+    const cs = this.construct.states[playerId];
+    if (!cs) return null;
+    return {
+      decklist: cs.decklist,
+      deckSize: cs.cards.length,
+      warnings: cs.warnings,
+      ready: cs.ready,
+    };
+  }
+
+  private matchesPublicSnapshot(): MatchPublicState[] {
+    if (!this.matches) return [];
+    return this.matches.map((m) => {
+      const allPids = [...m.teams[0], ...m.teams[1]];
+      return {
+        id: m.id,
+        teams: [m.teams[0].slice(), m.teams[1].slice()],
+        bestOf: m.bestOf,
+        wins: [m.wins[0], m.wins[1]] as [number, number],
+        startingLife: m.startingLife,
+        teamLife: [m.teamLife[0], m.teamLife[1]] as [number, number],
+        gameNumber: m.gameNumber,
+        status: m.status,
+        matchWinner: m.matchWinner,
+        currentGameWinner: m.currentGameWinner,
+        currentTurnTeamIdx: m.currentTurnTeamIdx,
+        turnNumber: m.turnNumber,
+        players: allPids.map((pid): PlayPublicPlayer => {
+          const player = this.players.get(pid)!;
+          const ps = m.states[pid];
+          const teamIdx = this.teamOf(m, pid);
+          return {
+            id: pid,
+            name: player.name,
+            deckSize: ps.deck.length,
+            handSize: ps.hand.length,
+            battlefield: ps.battlefield,
+            graveyard: ps.graveyard,
+            exile: ps.exile,
+            life: m.teamLife[teamIdx], // shared with teammate in 2HG
+            connected: player.connId !== null,
+          };
+        }),
+      };
+    });
   }
 
   private playPrivateFor(playerId: string): PlayPrivateState | null {
     if (!this.matches) return null;
-    const match = this.matches.find((m) => m.playerIds.includes(playerId));
+    const match = this.matches.find(
+      (m) => this.teamOf(m, playerId) >= 0,
+    );
     if (!match) return null;
     const ps = match.states[playerId];
     if (!ps) return null;
@@ -862,6 +1121,7 @@ export default class LobbyServer implements Party.Server {
         deckbuildPrivate: playerId
           ? this.deckbuildPrivateFor(playerId)
           : null,
+        constructPrivate: playerId ? this.constructPrivateFor(playerId) : null,
         playPrivate: playerId ? this.playPrivateFor(playerId) : null,
       };
       conn.send(JSON.stringify(msg));
@@ -944,6 +1204,10 @@ function clampLife(n: number): number {
   return Math.max(-99, Math.min(999, Math.floor(n)));
 }
 
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
 function freshGameState(loadout: Loadout): PlayingPlayerState {
   const lands = mintBasicLands(loadout.basicLands);
   // Re-mint deck cards so a new game gets fresh instanceIds (avoids any stale
@@ -958,7 +1222,6 @@ function freshGameState(loadout: Loadout): PlayingPlayerState {
     battlefield: [],
     graveyard: [],
     exile: [],
-    life: STARTING_LIFE,
   };
 }
 
