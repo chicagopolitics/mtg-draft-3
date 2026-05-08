@@ -1,21 +1,18 @@
 /**
  * Tiny client-side sound system. Plays short .wav cues for game actions.
- * Files are imported (not fetched by URL) so the bundler copies them into
- * the build output and serves them with cache-friendly hashed paths.
+ * Files live in /public/sounds/ and are referenced by URL (Turbopack doesn't
+ * ship with a wav module loader, so we use Next's static-file convention).
  *
  * Mute state lives in localStorage so it survives reloads. Browsers block
  * audio playback until the page has had a user interaction; we lazily
  * create `Audio` elements per cue, which avoids any pre-interaction cost.
  */
 
-import drawCardUrl from "@/lib/Sounds/draw_card.wav";
-import playCardUrl from "@/lib/Sounds/play_card.wav";
-
 export type SoundName = "drawCard" | "playCard";
 
 const URLS: Record<SoundName, string> = {
-  drawCard: drawCardUrl,
-  playCard: playCardUrl,
+  drawCard: "/sounds/draw_card.wav",
+  playCard: "/sounds/play_card.wav",
 };
 
 const MUTE_KEY = "mtg-draft-3.sounds.muted";

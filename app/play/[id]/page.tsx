@@ -1232,6 +1232,19 @@ function YourArea({
 
   return (
     <div
+      // Catch-all drop target: dropping anywhere inside YourArea that isn't a
+      // more-specific zone (the hand strip, an attach-target creature) lands
+      // on the battlefield. Forgives drops that miss the inner section by a
+      // small margin. The hand section calls stopPropagation so it still
+      // routes drops there correctly.
+      onDragOver={(e) => {
+        if (dragApi.isValidDropFor("battlefield")) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (!dragApi.isValidDropFor("battlefield")) return;
+        e.preventDefault();
+        dragApi.handleDrop("battlefield");
+      }}
       className={`flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto p-4 ${
         isCurrentTurn ? "ring-4 ring-inset ring-emerald-500/50" : ""
       } ${
@@ -1239,13 +1252,8 @@ function YourArea({
       }`}
     >
       <section
-        onDragOver={(e) => {
-          if (dragApi.isValidDropFor("battlefield")) e.preventDefault();
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          dragApi.handleDrop("battlefield");
-        }}
+        // Drop is handled by the YourArea catch-all wrapper above; this
+        // section only needs to render the visual highlight.
         className={`flex flex-1 flex-col rounded border-2 border-dashed bg-emerald-50/40 p-2 transition-colors dark:bg-emerald-950/20 ${
           bfHighlight
             ? "border-emerald-500 bg-emerald-100 dark:border-emerald-400 dark:bg-emerald-950/60"
@@ -1410,6 +1418,9 @@ function YourArea({
           }}
           onDrop={(e) => {
             e.preventDefault();
+            // Stop bubbling so the YourArea catch-all doesn't also route
+            // this drop to the battlefield.
+            e.stopPropagation();
             dragApi.handleDrop("hand");
           }}
           className={`group/hand absolute bottom-0 left-0 right-0 z-20 h-32 overflow-hidden rounded border-2 border-dashed bg-sky-50/95 px-2 pb-2 pt-2 transition-[height,padding] duration-300 hover:h-[26rem] hover:pt-12 focus-within:h-[26rem] focus-within:pt-12 dark:bg-sky-950/85 ${
@@ -1473,20 +1484,39 @@ function Sidebar({
           count={me.deckSize}
           onClick={() => onPileClick("deck")}
         />
-        <PileTile
-          label="graveyard"
-          count={me.graveyard.length}
-          topCard={me.graveyard[me.graveyard.length - 1]}
-          onClick={() => onPileClick("graveyard")}
-          highlight={graveHighlight}
+        {/*
+          Graveyard drop is forgiving: the catch zone extends ~12px above and
+          below the visible tile via padding. Visually the tile stays the same
+          size; the extra margin just absorbs near-misses.
+        */}
+        <div
+          className="-my-3 py-3"
           onDragOver={(e) => {
             if (dragApi.isValidDropFor("graveyard")) e.preventDefault();
           }}
           onDrop={(e) => {
+            if (!dragApi.isValidDropFor("graveyard")) return;
             e.preventDefault();
+            e.stopPropagation();
             dragApi.handleDrop("graveyard");
           }}
-        />
+        >
+          <PileTile
+            label="graveyard"
+            count={me.graveyard.length}
+            topCard={me.graveyard[me.graveyard.length - 1]}
+            onClick={() => onPileClick("graveyard")}
+            highlight={graveHighlight}
+            onDragOver={(e) => {
+              if (dragApi.isValidDropFor("graveyard")) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              dragApi.handleDrop("graveyard");
+            }}
+          />
+        </div>
         <PileTile
           label="exile"
           count={me.exile.length}
