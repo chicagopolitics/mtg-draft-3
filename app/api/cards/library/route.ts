@@ -26,7 +26,16 @@ export const dynamic = "force-dynamic";
 // because of batched Scryfall lookups. Subsequent requests are instant.
 export const maxDuration = 60;
 
-export async function GET() {
+export async function GET(req: Request) {
+  // ?refresh=1 forces a rebuild — useful when a previous build had Scryfall
+  // throttling and you ended up with cards missing art in the cached result.
+  const url = new URL(req.url);
+  const refresh = url.searchParams.get("refresh") === "1";
+  if (refresh) {
+    cached = null;
+    inFlight = null;
+  }
+
   if (cached) return Response.json(cached);
   if (inFlight) return Response.json(await inFlight);
 
@@ -104,23 +113,27 @@ async function buildLibrary(): Promise<LibraryResult> {
 
   let artMatched = 0;
   let artMissing = 0;
-  // Run set lookups in parallel. Each call is itself batched 75 cards/request.
+  // Sequential set lookups. Running 23 sets in parallel previously triggered
+  // Scryfall rate limiting (HTTP 429), and silent batch failures left whole
+  // sets with no art. attachScryfallArt now sleeps between its own batches
+  // and retries on 429/5xx — combined with sequencing here, we stay polite.
   const t0 = Date.now();
-  const lookups = await Promise.all(
-    [...groupedBySet.entries()].map(async ([code, cards]) => {
-      try {
-        return await attachScryfallArt(code, cards);
-      } catch (e) {
+  for (const [code, cards] of groupedBySet) {
+    try {
+      const r = await attachScryfallArt(code, cards);
+      artMatched += r.matched;
+      artMissing += r.missing;
+      if (r.missing > 0) {
         console.warn(
-          `[library] art lookup failed for ${code}: ${e instanceof Error ? e.message : String(e)}`,
+          `[library] ${code}: ${r.matched}/${cards.length} matched, ${r.missing} missing`,
         );
-        return { matched: 0, missing: cards.length };
       }
-    }),
-  );
-  for (const r of lookups) {
-    artMatched += r.matched;
-    artMissing += r.missing;
+    } catch (e) {
+      console.warn(
+        `[library] art lookup failed for ${code}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      artMissing += cards.length;
+    }
   }
   console.log(
     `[library] art: ${artMatched} matched, ${artMissing} missing across ${groupedBySet.size} sets in ${Date.now() - t0}ms`,
