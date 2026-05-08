@@ -26,6 +26,11 @@ import {
   getStoredPlayerName,
 } from "@/lib/identity";
 import { getPartykitHost } from "@/lib/partykit-client";
+import {
+  isMuted as isSoundMuted,
+  play as playSound,
+  setMuted as setSoundMuted,
+} from "@/lib/sounds";
 
 type CardActionTarget = {
   card: DraftCard;
@@ -172,6 +177,18 @@ function PlayConnected({
   function send(action: PlayAction) {
     const msg: ClientMessage = { type: "playAction", action };
     socket.send(JSON.stringify(msg));
+
+    // Local-only audio cues — only your own actions ring on your machine.
+    // (Opponents' actions ring on their machines.)
+    if (action.type === "draw" && action.count > 0) {
+      playSound("drawCard");
+    } else if (
+      action.type === "move" &&
+      action.from === "hand" &&
+      action.to === "battlefield"
+    ) {
+      playSound("playCard");
+    }
   }
 
   function sendRaw(msg: ClientMessage) {
@@ -1617,6 +1634,10 @@ function UtilityButtons({
   handRevealed: boolean;
   send: (action: PlayAction) => void;
 }) {
+  // Sound mute lives in localStorage, but UtilityButtons needs to re-render
+  // when it flips. Mirror the value into local state.
+  const [muted, setMuted] = useState(false);
+  useEffect(() => setMuted(isSoundMuted()), []);
   return (
     <div className="flex flex-col gap-1 rounded border border-zinc-300 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-900">
       <span className="text-[10px] uppercase tracking-wide text-zinc-500">
@@ -1657,6 +1678,16 @@ function UtilityButtons({
           onClick={() => send({ type: "revealHand", revealed: !handRevealed })}
         >
           {handRevealed ? "hide hand" : "reveal hand"}
+        </UtilBtn>
+        <UtilBtn
+          className="col-span-2"
+          onClick={() => {
+            const next = !muted;
+            setSoundMuted(next);
+            setMuted(next);
+          }}
+        >
+          {muted ? "unmute sounds" : "mute sounds"}
         </UtilBtn>
         <UtilBtn
           className="col-span-2"
