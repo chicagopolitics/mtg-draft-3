@@ -135,6 +135,11 @@ export type PlayPublicPlayer = {
   exile: DraftCard[];
   life: number;
   connected: boolean;
+  /**
+   * When set, the player has chosen to reveal their hand to the table.
+   * Stays in sync as they draw/discard. Cleared when they toggle off.
+   */
+  revealedHand?: DraftCard[];
 };
 
 export type PlayPublicState = {
@@ -206,6 +211,11 @@ export type PlayAction =
       delta: number;
     }
   | { type: "clearCounters"; instanceId: string }
+  | {
+      /** Toggle whether the sender's hand is broadcast to other players. */
+      type: "revealHand";
+      revealed: boolean;
+    }
   | {
       type: "move";
       instanceId: string;

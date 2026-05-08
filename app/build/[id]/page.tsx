@@ -425,7 +425,6 @@ function BasicLandPanel({
   clear: () => void;
   suggest: () => void;
 }) {
-  const suggestedLands = Math.max(0, MIN_DECK_SIZE - deckSize);
   return (
     <section className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
       <div className="mb-2 flex items-baseline justify-between gap-3">
@@ -437,7 +436,7 @@ function BasicLandPanel({
             onClick={suggest}
             disabled={deckSize === 0}
             className="rounded bg-emerald-600 px-2 py-1 font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
-            title={`Distribute ${suggestedLands} basics across colors based on your deck's mana pip counts`}
+            title="Suggest a basic-land split scaled to your deck size, average mana cost, and color pip distribution"
           >
             suggest mix
           </button>

@@ -625,6 +625,24 @@ function PlayBoard({
             hand {teammate.handSize} · deck {teammate.deckSize} · grave{" "}
             {teammate.graveyard.length} · exile {teammate.exile.length}
           </span>
+          {teammate.revealedHand && teammate.revealedHand.length > 0 ? (
+            <span className="ml-2 flex items-center gap-1 rounded bg-amber-100/80 px-1 py-0.5 ring-1 ring-amber-300/60 dark:bg-amber-950/50 dark:ring-amber-700/50">
+              <span className="text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                revealed
+              </span>
+              {teammate.revealedHand.map((c) => (
+                <CompactCard
+                  key={c.instanceId}
+                  card={c}
+                  size="xs"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setPeek({ card: c });
+                  }}
+                />
+              ))}
+            </span>
+          ) : null}
           {!teammate.connected ? (
             <span className="text-amber-600 dark:text-amber-400">away</span>
           ) : null}
@@ -873,6 +891,14 @@ function OpponentArea({
         <span>hand: {player.handSize}</span>
         <span>·</span>
         <span>deck: {player.deckSize}</span>
+        {player.revealedHand ? (
+          <>
+            <span>·</span>
+            <span className="font-bold text-amber-600 dark:text-amber-400">
+              hand revealed
+            </span>
+          </>
+        ) : null}
         {!player.connected ? (
           <>
             <span>·</span>
@@ -880,6 +906,21 @@ function OpponentArea({
           </>
         ) : null}
       </div>
+      {player.revealedHand && player.revealedHand.length > 0 ? (
+        <div className="flex flex-wrap gap-1 rounded bg-amber-50/60 p-1 ring-1 ring-amber-300/60 dark:bg-amber-950/30 dark:ring-amber-700/50">
+          {player.revealedHand.map((c) => (
+            <CompactCard
+              key={c.instanceId}
+              card={c}
+              size="xs"
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onCardPeek(c, false, undefined);
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
       <div className="flex min-h-24 flex-col gap-2 rounded bg-white p-1 dark:bg-zinc-950">
         {player.battlefield.length === 0 ? (
           <p className="px-2 py-3 text-[10px] text-zinc-400">
@@ -1439,6 +1480,7 @@ function Sidebar({
       <UtilityButtons
         deckSize={me.deckSize}
         handSize={me.handSize}
+        handRevealed={!!me.revealedHand}
         send={send}
       />
     </aside>
@@ -1566,10 +1608,13 @@ function LifeBtn({
 function UtilityButtons({
   deckSize,
   handSize,
+  handRevealed,
   send,
 }: {
   deckSize: number;
   handSize: number;
+  /** True when the sender has chosen to reveal their hand to the table. */
+  handRevealed: boolean;
   send: (action: PlayAction) => void;
 }) {
   return (
@@ -1603,6 +1648,16 @@ function UtilityButtons({
           untap lands
         </UtilBtn>
         <UtilBtn onClick={() => send({ type: "untapAll" })}>untap all</UtilBtn>
+        <UtilBtn
+          className={`col-span-2 ${
+            handRevealed
+              ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
+              : ""
+          }`}
+          onClick={() => send({ type: "revealHand", revealed: !handRevealed })}
+        >
+          {handRevealed ? "hide hand" : "reveal hand"}
+        </UtilBtn>
         <UtilBtn
           className="col-span-2"
           onClick={() => {

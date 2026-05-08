@@ -103,6 +103,8 @@ type PlayingPlayerState = {
   battlefield: BattlefieldCard[];
   graveyard: DraftCard[];
   exile: DraftCard[];
+  /** When true, the player's hand is broadcast in the public snapshot. */
+  handRevealed?: boolean;
 };
 
 /** A player's finished deckbuild — used to start fresh games of a match. */
@@ -144,6 +146,17 @@ type MatchRuntime = {
 export default class LobbyServer implements Party.Server {
   private players = new Map<string, Player>();
   private connToPlayer = new Map<string, string>();
+  /**
+   * Pending admin-handoff timers, keyed by playerId of the admin that just
+   * disconnected. If they reconnect before the timer fires (e.g., the user
+   * just navigated from /draft to /build, briefly closing the WebSocket),
+   * we cancel the handoff and they keep admin. Without this, every page
+   * navigation would transfer admin to whoever stayed put.
+   */
+  private pendingAdminHandoffs = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private config: LobbyConfig = { ...DEFAULT_CONFIG };
   private phase: LobbyPhase = "waiting";
 
@@ -200,6 +213,13 @@ export default class LobbyServer implements Party.Server {
     } else {
       existing.connId = conn.id;
       if (requestedName?.trim()) existing.name = requestedName.trim();
+      // If a handoff was pending for this player (they were admin and just
+      // briefly disconnected), cancel it — their reconnect "won the race."
+      const pending = this.pendingAdminHandoffs.get(playerId);
+      if (pending) {
+        clearTimeout(pending);
+        this.pendingAdminHandoffs.delete(playerId);
+      }
       // Reconnects do NOT auto-promote. Admin status is sticky across the
       // session — a successor is only chosen in onClose when the admin leaves.
       if (!this.anyAdminExists()) existing.isAdmin = true;
@@ -217,16 +237,29 @@ export default class LobbyServer implements Party.Server {
     if (!player) return;
     player.connId = null;
 
-    // When the admin leaves, hand the role to a connected player so the lobby
-    // isn't stuck without one (admin-only actions like startMatches, etc.).
+    // When the admin leaves, defer the handoff for a few seconds. Page
+    // navigation (e.g., /lobby → /draft → /build) closes and reopens the
+    // WebSocket within ~100-500ms; an immediate handoff would transfer admin
+    // to whichever player happened not to be navigating.
     if (player.isAdmin) {
-      const successor = [...this.players.values()].find(
-        (p) => p.connId !== null && p.id !== player.id,
-      );
-      if (successor) {
-        player.isAdmin = false;
-        successor.isAdmin = true;
-      }
+      // Replace any prior timer for this same player.
+      const prior = this.pendingAdminHandoffs.get(playerId);
+      if (prior) clearTimeout(prior);
+      const timer = setTimeout(() => {
+        this.pendingAdminHandoffs.delete(playerId);
+        const stillAdmin = this.players.get(playerId);
+        if (!stillAdmin || !stillAdmin.isAdmin) return;
+        if (stillAdmin.connId !== null) return; // they came back
+        const successor = [...this.players.values()].find(
+          (p) => p.connId !== null && p.id !== playerId,
+        );
+        if (successor) {
+          stillAdmin.isAdmin = false;
+          successor.isAdmin = true;
+          this.broadcastState();
+        }
+      }, 8000);
+      this.pendingAdminHandoffs.set(playerId, timer);
     }
 
     this.broadcastState();
@@ -924,6 +957,12 @@ export default class LobbyServer implements Party.Server {
         bf.counters = undefined;
         return;
       }
+      case "revealHand": {
+        // Toggle on the sender's own state only — you can't reveal your
+        // teammate's hand for them.
+        myState.handRevealed = !!action.revealed;
+        return;
+      }
       case "move": {
         // For battlefield-sourced moves, find the owner among teammates and
         // operate on their state. For hand-sourced moves, only the sender's
@@ -1183,6 +1222,9 @@ export default class LobbyServer implements Party.Server {
             exile: ps.exile,
             life: m.teamLife[teamIdx], // shared with teammate in 2HG
             connected: player.connId !== null,
+            // Revealed hands snap to whatever's in `ps.hand` at broadcast time,
+            // so drawing/discarding while revealed stays in sync.
+            revealedHand: ps.handRevealed ? ps.hand : undefined,
           };
         }),
       };
