@@ -403,6 +403,9 @@ function PlayBoard({
   // Turn-pop banner: when the active team flips to mine, show a brief banner.
   // We track the previous turn idx so we don't fire on initial mount, and so
   // the banner doesn't re-trigger on unrelated state updates that re-render.
+  // Stays open until the player picks an option or clicks away. No auto-
+  // dismiss because there's now a decision to make (untap lands vs all vs
+  // skip), and a timeout would race with the player's intent.
   const [showTurnPop, setShowTurnPop] = useState(false);
   const prevTurnRef = useRef<number | null>(null);
   useEffect(() => {
@@ -418,8 +421,6 @@ function PlayBoard({
       match.currentGameWinner === null
     ) {
       setShowTurnPop(true);
-      const t = setTimeout(() => setShowTurnPop(false), 1200);
-      return () => clearTimeout(t);
     }
   }, [match.currentTurnTeamIdx, myTeamIdx, match.status, match.currentGameWinner]);
   const [pile, setPile] = useState<PileTarget | null>(null);
@@ -789,21 +790,57 @@ function PlayBoard({
       ) : null}
 
       {/*
-        Turn-pop banner: drops down from the top of the play area, scales up,
-        fades. Pointer-events disabled so it can't intercept clicks. Always
-        rendered so the transition runs both directions (in + out).
+        Turn-pop prompt: an interactive banner that appears when the turn
+        flips to you. Offers quick untap shortcuts, plus a click-anywhere
+        backdrop that just dismisses without untapping anything.
       */}
-      <div
-        className={`pointer-events-none absolute inset-x-0 top-0 z-40 flex justify-center pt-4 transition-all duration-300 ${
-          showTurnPop
-            ? "translate-y-0 scale-100 opacity-100"
-            : "-translate-y-8 scale-95 opacity-0"
-        }`}
-      >
-        <div className="rounded-full bg-emerald-500 px-8 py-3 text-2xl font-bold tracking-wide text-white shadow-2xl ring-4 ring-emerald-300/60">
-          {isTwoHeaded ? "YOUR TEAM'S TURN" : "YOUR TURN"}
+      {showTurnPop ? (
+        <div
+          className="absolute inset-0 z-40 flex items-start justify-center bg-black/30 pt-12"
+          onClick={() => setShowTurnPop(false)}
+        >
+          <div
+            className="flex flex-col items-center gap-3 rounded-2xl bg-white p-6 shadow-2xl ring-4 ring-emerald-300/60 dark:bg-zinc-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="rounded-full bg-emerald-500 px-6 py-2 text-2xl font-bold tracking-wide text-white">
+              {isTwoHeaded ? "YOUR TEAM'S TURN" : "YOUR TURN"}
+            </h2>
+            <p className="text-xs text-zinc-500">
+              Pick an untap option, or click outside to skip.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  send({ type: "untapAll", landsOnly: true });
+                  setShowTurnPop(false);
+                }}
+                className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+              >
+                untap lands
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  send({ type: "untapAll" });
+                  setShowTurnPop(false);
+                }}
+                className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+              >
+                untap all
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowTurnPop(false)}
+                className="rounded border border-zinc-300 px-4 py-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                skip
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

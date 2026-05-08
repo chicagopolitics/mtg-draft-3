@@ -515,7 +515,18 @@ function ZonePanel({
           {actionLabel}
         </button>
       </header>
-      <div className="max-h-[28rem] overflow-y-auto p-3">{children}</div>
+      {/*
+        `scrollbar-gutter: stable` reserves the scrollbar's width whether or
+        not it's currently shown, so layout doesn't shift when content grows.
+        Combined with the grid's matched cell size (see CardGrid), cards no
+        longer get clipped by the scrollbar.
+      */}
+      <div
+        className="max-h-[28rem] overflow-y-auto p-3"
+        style={{ scrollbarGutter: "stable" }}
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -528,7 +539,11 @@ function CardGrid({
   onClick: (card: DraftCard) => void;
 }) {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-2">
+    // 15rem (240px) matches `CardView`'s fixed `w-60`. Without that match,
+    // narrower cells let the card overflow horizontally and the scrollbar
+    // would clip the rightmost column. `justify-items-center` centers the
+    // card when a stretched cell ends up wider than 240px.
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] justify-items-center gap-2">
       {cards.map((card) => (
         <button
           key={card.instanceId}
