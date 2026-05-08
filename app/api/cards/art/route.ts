@@ -42,6 +42,10 @@ const cache = new Map<string, string | null>();
 const inflight = new Map<string, Promise<string | null>>();
 
 type ScryfallCard = {
+  /** Lowercase set code echoed back on each card. Critical for matching when
+   * a single batch contains the same collector_number across multiple sets
+   * (e.g., USG #311 = Thran Turbine, TMP #311 = Telethopter). */
+  set?: string;
   collector_number?: string;
   image_uris?: { art_crop?: string };
   card_faces?: Array<{ image_uris?: { art_crop?: string } }>;
@@ -94,20 +98,16 @@ async function fetchUncached(
     const matched = new Set<string>();
     if (body) {
       for (const sc of body.data ?? []) {
-        if (!sc.collector_number) continue;
-        // Scryfall's response doesn't echo the requested set on each card,
-        // so we match by collector_number against the slice.
-        const candidates = slice.filter(
-          (s) => s.collectorNumber === sc.collector_number,
-        );
+        if (!sc.collector_number || !sc.set) continue;
+        const k = cacheKey(sc.set, sc.collector_number);
+        // Only count this as a match if we actually asked for it in this slice.
+        if (!slice.some((s) => cacheKey(s.set, s.collectorNumber) === k)) {
+          continue;
+        }
         const art =
           sc.image_uris?.art_crop ?? sc.card_faces?.[0]?.image_uris?.art_crop;
-        for (const c of candidates) {
-          const k = cacheKey(c.set, c.collectorNumber);
-          if (matched.has(k)) continue;
-          cache.set(k, art ?? null);
-          matched.add(k);
-        }
+        cache.set(k, art ?? null);
+        matched.add(k);
       }
     }
     // Anything in this slice that didn't get matched gets a `null` (miss)
