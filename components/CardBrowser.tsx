@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { useCardArt } from "@/lib/artCache";
 import type { Card, CardType, Color } from "@/lib/cards/schema";
 
 const COLORS: Color[] = ["W", "U", "B", "R", "G"];
@@ -387,19 +388,7 @@ function CardRow({
       </div>
       {revealed ? (
         <div className="flex gap-3 border-t border-zinc-100 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950/50">
-          {card.artUrl ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={card.artUrl}
-              alt={card.name}
-              loading="lazy"
-              className="h-32 w-auto rounded shadow"
-            />
-          ) : (
-            <div className="grid h-32 w-44 place-items-center rounded bg-zinc-200 text-xs text-zinc-500 dark:bg-zinc-800">
-              no art available
-            </div>
-          )}
+          <RevealedArt card={card} />
           <div className="min-w-0 flex-1 space-y-1 text-xs leading-snug">
             <p className="whitespace-pre-line">{card.text}</p>
             {card.flavor ? (
@@ -409,5 +398,38 @@ function CardRow({
         </div>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * Renders the card art when a row is expanded. Uses the lazy art cache so
+ * the cross-set library (which omits artUrls to keep the build fast) gets
+ * its art fetched on demand. The placeholder reads "loading" when we have
+ * a lookup key (setCode + collectorNumber); "no art available" is reserved
+ * for cards we genuinely can't look up (LLM-generated, custom).
+ */
+function RevealedArt({ card }: { card: Card }) {
+  const lazyArt = useCardArt(
+    card.setCode,
+    card.collectorNumber,
+    !!card.artUrl,
+  );
+  const artUrl = card.artUrl ?? lazyArt;
+  const lookupable = !!card.setCode && !!card.collectorNumber;
+  if (artUrl) {
+    return (
+      /* eslint-disable-next-line @next/next/no-img-element */
+      <img
+        src={artUrl}
+        alt={card.name}
+        loading="lazy"
+        className="h-32 w-auto rounded shadow"
+      />
+    );
+  }
+  return (
+    <div className="grid h-32 w-44 place-items-center rounded bg-zinc-200 text-xs text-zinc-500 dark:bg-zinc-800">
+      {lookupable ? "loading art…" : "no art available"}
+    </div>
   );
 }
