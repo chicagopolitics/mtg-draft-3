@@ -3,6 +3,7 @@
 import { Fragment, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import type { Card, Color, ManaCost, Rarity } from "@/lib/cards/schema";
+import { useCardArt } from "@/lib/artCache";
 
 const COLOR_TOKEN: Record<Color, { bg: string; pip: string; label: string }> = {
   W: { bg: "from-amber-50 to-amber-200", pip: "bg-amber-100 text-amber-900", label: "W" },
@@ -176,12 +177,21 @@ function ManaPips({ cost }: { cost: ManaCost }) {
 }
 
 function ArtPlaceholder({ card }: { card: Card }) {
-  if (card.artUrl) {
+  // If the card already carries an artUrl (draft/sealed/LLM), use it.
+  // Otherwise lazy-load via the art cache, falling back to the gradient
+  // until the URL arrives (or stays missing).
+  const lazyArt = useCardArt(
+    card.setCode,
+    card.collectorNumber,
+    !!card.artUrl,
+  );
+  const artUrl = card.artUrl ?? lazyArt;
+  if (artUrl) {
     return (
       <div className="aspect-[4/3] w-full shrink-0 overflow-hidden rounded bg-zinc-100 dark:bg-zinc-800">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={card.artUrl}
+          src={artUrl}
           alt={card.name}
           loading="lazy"
           className="h-full w-full object-cover object-top"

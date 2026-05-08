@@ -3,7 +3,6 @@ import path from "node:path";
 
 import { BASIC_LAND_IDS, getFallbackBasicLands } from "@/lib/cards/basics";
 import { convertMtgJsonSet, type MtgJsonSet } from "@/lib/cards/sets/mtgjson";
-import { attachScryfallArt } from "@/lib/cards/sets/scryfall";
 import type { Card } from "@/lib/cards/schema";
 
 type LibraryResult = {
@@ -11,20 +10,16 @@ type LibraryResult = {
   totalSetsRead: number;
   totalCardsRead: number;
   uniqueCardCount: number;
-  artMatched: number;
-  artMissing: number;
 };
 
-// In-memory cache. The library is heavy to build (90+ files + Scryfall lookups
-// for thousands of cards) but stable across requests, so we build once per
-// server lifetime.
+// In-memory cache. The library is now just JSON parsing (no Scryfall) so the
+// build is fast (~1s for ~23 sets). We still cache it because the result is
+// stable across requests. Art is fetched lazily client-side via /api/cards/art.
 let cached: LibraryResult | null = null;
 let inFlight: Promise<LibraryResult> | null = null;
 
 export const dynamic = "force-dynamic";
-// Long route timeout — building the library can take ~30s on cold start
-// because of batched Scryfall lookups. Subsequent requests are instant.
-export const maxDuration = 60;
+export const maxDuration = 30;
 
 export async function GET(req: Request) {
   // ?refresh=1 forces a rebuild — useful when a previous build had Scryfall
@@ -90,54 +85,18 @@ async function buildLibrary(): Promise<LibraryResult> {
   const unique = [...byName.values()];
 
   // Inject fallback basic lands if no canonical printings made it through.
-  // (Old expansions often lack basics in MTGJSON.)
+  // (Old expansions often lack basics in MTGJSON.) Fallback basics already
+  // carry their own artUrl so they're ready to render without /api/cards/art.
   const hasBasics = unique.some((e) => BASIC_LAND_IDS.has(e.card.id));
   if (!hasBasics) {
     const fallback = await getFallbackBasicLands();
     for (const c of fallback) {
       const key = normalizeName(c.name);
       if (!byName.has(key)) {
-        byName.set(key, { card: c, sourceSet: "" }); // art already attached
+        byName.set(key, { card: c, sourceSet: "" });
       }
     }
   }
-
-  // Group by source set so we can use the existing Scryfall batch lookup
-  // (which keys lookups by set code + collector number).
-  const groupedBySet = new Map<string, Card[]>();
-  for (const { card, sourceSet } of byName.values()) {
-    if (!sourceSet) continue; // already has art (e.g., fallback basics)
-    if (!groupedBySet.has(sourceSet)) groupedBySet.set(sourceSet, []);
-    groupedBySet.get(sourceSet)!.push(card);
-  }
-
-  let artMatched = 0;
-  let artMissing = 0;
-  // Sequential set lookups. Running 23 sets in parallel previously triggered
-  // Scryfall rate limiting (HTTP 429), and silent batch failures left whole
-  // sets with no art. attachScryfallArt now sleeps between its own batches
-  // and retries on 429/5xx — combined with sequencing here, we stay polite.
-  const t0 = Date.now();
-  for (const [code, cards] of groupedBySet) {
-    try {
-      const r = await attachScryfallArt(code, cards);
-      artMatched += r.matched;
-      artMissing += r.missing;
-      if (r.missing > 0) {
-        console.warn(
-          `[library] ${code}: ${r.matched}/${cards.length} matched, ${r.missing} missing`,
-        );
-      }
-    } catch (e) {
-      console.warn(
-        `[library] art lookup failed for ${code}: ${e instanceof Error ? e.message : String(e)}`,
-      );
-      artMissing += cards.length;
-    }
-  }
-  console.log(
-    `[library] art: ${artMatched} matched, ${artMissing} missing across ${groupedBySet.size} sets in ${Date.now() - t0}ms`,
-  );
 
   const cards = [...byName.values()].map((e) => e.card);
   // Stable sort by name for predictable client-side iteration.
@@ -148,8 +107,6 @@ async function buildLibrary(): Promise<LibraryResult> {
     totalSetsRead: files.length,
     totalCardsRead,
     uniqueCardCount: cards.length,
-    artMatched,
-    artMissing,
   };
 }
 

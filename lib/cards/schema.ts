@@ -52,6 +52,8 @@ export const CardSchema = z.object({
   artUrl: z.string().optional(),
   /** Collector number within a real set (e.g., "1", "247a"). Used as Scryfall lookup key. */
   collectorNumber: z.string().optional(),
+  /** Lowercase set code (e.g., "usg", "tmp"). Pairs with collectorNumber for art lookup. */
+  setCode: z.string().max(8).optional(),
 });
 export type Card = z.infer<typeof CardSchema>;
 

@@ -225,9 +225,6 @@ function ConstructConnected({
     return (
       <Centered>
         <p>building cross-set library…</p>
-        <p className="text-xs text-zinc-500">
-          (cold start hits Scryfall — first load can take ~30s)
-        </p>
       </Centered>
     );
   }

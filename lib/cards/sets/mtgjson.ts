@@ -162,6 +162,7 @@ function convertCard(c: MtgJsonCard, idPrefix: string): Card | null {
     power: parseStat(c.power),
     toughness: parseStat(c.toughness),
     collectorNumber: c.number,
+    setCode: idPrefix,
   };
 }
 

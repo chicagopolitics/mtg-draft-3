@@ -1,5 +1,8 @@
+"use client";
+
 import { counterDelta } from "@/lib/lobby/protocol";
 import type { Color, DraftCard } from "@/lib/cards/schema";
+import { useCardArt } from "@/lib/artCache";
 
 const COLOR_BG: Record<Color, string> = {
   W: "from-amber-50 to-amber-200",
@@ -98,6 +101,15 @@ export function CompactCard({
             COLOR_BG[card.colors[card.colors.length - 1]].split(" ")[1]
           }`;
 
+  // Lazy-load art when the card came from the cross-set library (no baked
+  // artUrl, but has setCode + collectorNumber for lookup).
+  const lazyArt = useCardArt(
+    card.setCode,
+    card.collectorNumber,
+    !!card.artUrl,
+  );
+  const artUrl = card.artUrl ?? lazyArt;
+
   const initials = card.name
     .split(" ")
     .slice(0, 2)
@@ -156,11 +168,11 @@ export function CompactCard({
       <div className="truncate text-[11px] font-semibold leading-tight">
         {card.name}
       </div>
-      {card.artUrl ? (
+      {artUrl ? (
         <div className="mt-1 flex flex-1 overflow-hidden rounded bg-zinc-100 dark:bg-zinc-800">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={card.artUrl}
+            src={artUrl}
             alt={card.name}
             loading="lazy"
             className="h-full w-full object-cover"
