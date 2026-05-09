@@ -379,23 +379,37 @@ function PlayBoard({
     }
   }
   // Resolve caster identity → small dot color for shared-battlefield UX.
+  // Dot color is bound to the player's seat in the match (NOT the viewer),
+  // so every player at the table agrees that "Alice = blue, Bob = yellow,
+  // Charlie = red, Dave = purple". Hues are picked for maximum cross-color
+  // distinguishability — each pair on the wheel is at least 90° apart, and
+  // each team gets one warm + one cool to keep within-team contrast high.
+  const DOT_PALETTE = [
+    { class: "bg-sky-500", name: "blue" }, // team A, seat 0
+    { class: "bg-amber-400", name: "yellow" }, // team A, seat 1
+    { class: "bg-rose-600", name: "red" }, // team B, seat 0
+    { class: "bg-violet-500", name: "purple" }, // team B, seat 1
+  ] as const;
   function casterDotFor(ownerId: string): {
     casterDotClass?: string;
     casterDotLabel?: string;
   } {
-    if (!isTwoHeaded && ownerId === playerId) {
-      // 1v1 — no dots needed; everything in your zone is yours.
+    if (!isTwoHeaded) {
+      // 1v1 — no dots; ally/opp panel borders already convey ownership.
       return {};
     }
+    // Slot order matches `[...match.teams[0], ...match.teams[1]]` exactly,
+    // and that's the same on every client, so colors are stable across viewers.
+    const slots = [...match.teams[0], ...match.teams[1]];
+    const slot = slots.indexOf(ownerId);
+    if (slot < 0) return {};
+    const swatch = DOT_PALETTE[slot] ?? DOT_PALETTE[0];
     const ownerName =
       play.players.find((p) => p.id === ownerId)?.name ?? "?";
-    if (ownerId === playerId) {
-      return { casterDotClass: "bg-cyan-400", casterDotLabel: `${me?.name ?? "you"}'s card` };
-    }
-    if (teammate && ownerId === teammate.id) {
-      return { casterDotClass: "bg-emerald-400", casterDotLabel: `${teammate.name}'s card` };
-    }
-    return { casterDotClass: "bg-rose-400", casterDotLabel: `${ownerName}'s card` };
+    return {
+      casterDotClass: swatch.class,
+      casterDotLabel: `${ownerName} (${swatch.name})`,
+    };
   }
 
   const [cardAction, setCardAction] = useState<CardActionTarget | null>(null);
@@ -421,8 +435,14 @@ function PlayBoard({
       match.currentGameWinner === null
     ) {
       setShowTurnPop(true);
+      // The server auto-draws for every member of the new active team on
+      // any turn flip (turnNumber > 1). Mirror that with the local draw
+      // sound so the audio matches the visible hand bump.
+      if (match.turnNumber > 1) {
+        playSound("drawCard");
+      }
     }
-  }, [match.currentTurnTeamIdx, myTeamIdx, match.status, match.currentGameWinner]);
+  }, [match.currentTurnTeamIdx, myTeamIdx, match.status, match.currentGameWinner, match.turnNumber]);
   const [pile, setPile] = useState<PileTarget | null>(null);
   const [peek, setPeek] = useState<PeekTarget | null>(null);
   const [dragging, setDragging] = useState<{
@@ -564,21 +584,51 @@ function PlayBoard({
                   ? `${isTwoHeaded ? "Your team's" : "Your"} turn (T${match.turnNumber})`
                   : `${opponentName}'s turn (T${match.turnNumber})`}
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  sendRaw({ type: "passTurn", matchId: match.id })
-                }
-                className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
-                disabled={match.currentTurnTeamIdx !== myTeamIdx}
-                title={
-                  match.currentTurnTeamIdx === myTeamIdx
-                    ? "End your team's turn"
-                    : "It's not your team's turn"
-                }
-              >
-                Pass turn
-              </button>
+              {(() => {
+                const myTurn = match.currentTurnTeamIdx === myTeamIdx;
+                const iPassed = match.passedMembers.includes(playerId);
+                const teammatePassed =
+                  isTwoHeaded &&
+                  myTeammateId !== null &&
+                  match.passedMembers.includes(myTeammateId);
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        sendRaw({ type: "passTurn", matchId: match.id })
+                      }
+                      className={`rounded px-2 py-1 text-xs font-semibold disabled:opacity-40 ${
+                        iPassed
+                          ? "bg-amber-500 text-white hover:bg-amber-600"
+                          : "bg-emerald-600 text-white hover:bg-emerald-700"
+                      }`}
+                      disabled={!myTurn}
+                      title={
+                        !myTurn
+                          ? "It's not your team's turn"
+                          : iPassed
+                            ? "Take your turn back"
+                            : isTwoHeaded
+                              ? "End your sub-turn (team turn ends when teammate also ends)"
+                              : "End your turn"
+                      }
+                    >
+                      {iPassed ? "take turn back" : "end my turn"}
+                    </button>
+                    {isTwoHeaded ? (
+                      <span
+                        className="text-[10px] text-zinc-500"
+                        title="Sub-turn status"
+                      >
+                        {iPassed ? "✓" : "·"} you
+                        {" "}
+                        {teammatePassed ? "✓" : "·"} teammate
+                      </span>
+                    ) : null}
+                  </>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => {
@@ -604,10 +654,13 @@ function PlayBoard({
         }`}
       >
         {isTwoHeaded ? (
-          <div className="flex items-start">
-            <span className="mr-2 self-stretch rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-700 dark:text-rose-300">
+          <div className="flex flex-col items-start gap-1 self-stretch pr-2">
+            <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-700 dark:text-rose-300">
               opp team
             </span>
+            <p className="font-mono text-2xl font-bold text-rose-600 dark:text-rose-400">
+              ♥ {match.teamLife[oppTeamIdx]}
+            </p>
           </div>
         ) : null}
         {opponents.length === 0 ? (
@@ -620,6 +673,7 @@ function PlayBoard({
               key={opp.id}
               player={opp}
               isCurrentTurn={match.currentTurnTeamIdx === oppTeamIdx}
+              showLife={!isTwoHeaded}
               childrenByParent={childrenByParent}
               allFieldIds={allFieldIds}
               casterDotFor={casterDotFor}
@@ -880,6 +934,7 @@ function ResultOverlay({
 function OpponentArea({
   player,
   isCurrentTurn = false,
+  showLife = true,
   childrenByParent,
   allFieldIds,
   casterDotFor,
@@ -889,6 +944,9 @@ function OpponentArea({
 }: {
   player: PlayPublicPlayer;
   isCurrentTurn?: boolean;
+  /** Hide the per-player life display; e.g. 2HG shows team life once at the
+   * team-strip level instead of repeating it on each panel. */
+  showLife?: boolean;
   /** Whole-table attach index built in PlayBoard. */
   childrenByParent: Map<string, { b: BattlefieldCard; ownerId: string }[]>;
   /** Set of every battlefield instanceId across the table. */
@@ -937,9 +995,11 @@ function OpponentArea({
             their turn
           </span>
         ) : null}
-        <p className="font-mono text-sm text-rose-600 dark:text-rose-400">
-          ♥ {player.life}
-        </p>
+        {showLife ? (
+          <p className="font-mono text-sm text-rose-600 dark:text-rose-400">
+            ♥ {player.life}
+          </p>
+        ) : null}
       </header>
       <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-zinc-500">
         <span>hand: {player.handSize}</span>
@@ -1313,131 +1373,188 @@ function YourArea({
           <p className="p-2 text-xs text-zinc-500">empty.</p>
         ) : (
           <div className="flex flex-1 flex-col gap-3">
-            <div className="flex flex-wrap gap-2">
-              {nonLands.length === 0 ? (
-                <p className="p-2 text-xs text-zinc-400 italic">
-                  no nonland permanents.
-                </p>
-              ) : (
-                (() => {
-                  // `nonLands` is already filtered to "tops" — cards parented
-                  // anywhere on the table were excluded above. Children come
-                  // from the whole-table index (passed in as a prop), which
-                  // can include opp-owned auras attached to your creature.
-                  const tops = nonLands;
-                  return tops.map((parent) => {
-                    const kidsRaw =
-                      childrenByParent.get(parent.b.card.instanceId) ?? [];
-                    const kids: OwnedBf[] = kidsRaw.map((k) => ({
-                      b: k.b,
-                      ownerId: k.ownerId,
-                      isMine: k.ownerId === me.id,
-                    }));
-                    if (kids.length === 0) {
-                      return (
-                        <div
-                          key={parent.b.card.instanceId}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            onCardClick(parent.b.card, "battlefield");
-                          }}
-                        >
-                          {renderBattlefieldCard(parent)}
-                        </div>
-                      );
-                    }
-                    // Stack children ABOVE the parent so each shows just its
-                    // title strip. Parent sits at the bottom of the stack
-                    // fully visible; each kid above peeks `offset` pixels.
-                    // ~28px reveals the name + a sliver of art on md cards.
-                    const offset = 28;
-                    const w = 144;
-                    const h = 208 + kids.length * offset;
-                    return (
+            {(() => {
+              // Render a single parent (with its attached kids stacked above)
+              // — used in both 1v1 and the split 2HG layout.
+              const renderTop = (parent: OwnedBf) => {
+                const kidsRaw =
+                  childrenByParent.get(parent.b.card.instanceId) ?? [];
+                const kids: OwnedBf[] = kidsRaw.map((k) => ({
+                  b: k.b,
+                  ownerId: k.ownerId,
+                  isMine: k.ownerId === me.id,
+                }));
+                if (kids.length === 0) {
+                  return (
+                    <div
+                      key={parent.b.card.instanceId}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        onCardClick(parent.b.card, "battlefield");
+                      }}
+                    >
+                      {renderBattlefieldCard(parent)}
+                    </div>
+                  );
+                }
+                const offset = 28;
+                const w = 144;
+                const h = 208 + kids.length * offset;
+                return (
+                  <div
+                    key={parent.b.card.instanceId}
+                    className="relative"
+                    style={{ width: w, height: h }}
+                  >
+                    {kids.map((kid, i) => (
                       <div
-                        key={parent.b.card.instanceId}
-                        className="relative"
-                        style={{ width: w, height: h }}
+                        key={kid.b.card.instanceId}
+                        className="absolute left-0"
+                        style={{ top: i * offset, zIndex: i + 1 }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          onCardClick(kid.b.card, "battlefield");
+                        }}
                       >
-                        {kids.map((kid, i) => (
-                          <div
-                            key={kid.b.card.instanceId}
-                            className="absolute left-0"
-                            style={{
-                              top: i * offset,
-                              zIndex: i + 1,
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              onCardClick(kid.b.card, "battlefield");
-                            }}
-                          >
-                            {renderBattlefieldCard(kid)}
-                          </div>
-                        ))}
-                        <div
-                          className="absolute left-0"
-                          style={{
-                            top: kids.length * offset,
-                            zIndex: 1000,
-                          }}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            onCardClick(parent.b.card, "battlefield");
-                          }}
-                        >
-                          {renderBattlefieldCard(parent)}
+                        {renderBattlefieldCard(kid)}
+                      </div>
+                    ))}
+                    <div
+                      className="absolute left-0"
+                      style={{ top: kids.length * offset, zIndex: 1000 }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        onCardClick(parent.b.card, "battlefield");
+                      }}
+                    >
+                      {renderBattlefieldCard(parent)}
+                    </div>
+                  </div>
+                );
+              };
+
+              const renderLandGroup = (key: string, group: OwnedBf[]) => (
+                <div key={key} className="flex items-end">
+                  {group.map((o, i) => {
+                    const dot = casterDotFor(o.ownerId);
+                    return (
+                      <CompactCard
+                        key={o.b.card.instanceId}
+                        card={o.b.card}
+                        tapped={o.b.tapped}
+                        size="md"
+                        casterDotClass={dot.casterDotClass}
+                        casterDotLabel={dot.casterDotLabel}
+                        style={{ marginLeft: i === 0 ? 0 : "-7rem" }}
+                        onClick={() =>
+                          send({
+                            type: "tap",
+                            instanceId: o.b.card.instanceId,
+                            tapped: !o.b.tapped,
+                          })
+                        }
+                        onMenu={() =>
+                          onCardClick(o.b.card, "battlefield")
+                        }
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          onCardClick(o.b.card, "battlefield");
+                        }}
+                        draggable
+                        onDragStart={(e) =>
+                          dragApi.startDrag("battlefield", o.b.card, e)
+                        }
+                        onDragEnd={dragApi.endDrag}
+                      />
+                    );
+                  })}
+                </div>
+              );
+
+              // 2HG: split into "mine" (left) and "teammate" (right) so each
+              // player can scan their own side at a glance. 1v1: single
+              // column as before.
+              if (!teammate) {
+                return (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      {nonLands.length === 0 ? (
+                        <p className="p-2 text-xs italic text-zinc-400">
+                          no nonland permanents.
+                        </p>
+                      ) : (
+                        nonLands.map(renderTop)
+                      )}
+                    </div>
+                    {lands.length > 0 ? (
+                      <div className="mt-auto border-t border-emerald-200/60 pt-2 dark:border-emerald-900/30">
+                        <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+                          {[...landGroups.entries()].map(([k, g]) =>
+                            renderLandGroup(k, g),
+                          )}
                         </div>
                       </div>
-                    );
-                  });
-                })()
-              )}
-            </div>
+                    ) : null}
+                  </>
+                );
+              }
 
-            {lands.length > 0 ? (
-              <div className="mt-auto border-t border-emerald-200/60 pt-2 dark:border-emerald-900/30">
-                <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
-                  {[...landGroups.entries()].map(([groupKey, group]) => (
-                    <div key={groupKey} className="flex items-end">
-                      {group.map((o, i) => {
-                        const dot = casterDotFor(o.ownerId);
-                        return (
-                          <CompactCard
-                            key={o.b.card.instanceId}
-                            card={o.b.card}
-                            tapped={o.b.tapped}
-                            size="md"
-                            casterDotClass={dot.casterDotClass}
-                            casterDotLabel={dot.casterDotLabel}
-                            style={{ marginLeft: i === 0 ? 0 : "-7rem" }}
-                            onClick={() =>
-                              send({
-                                type: "tap",
-                                instanceId: o.b.card.instanceId,
-                                tapped: !o.b.tapped,
-                              })
-                            }
-                            onMenu={() =>
-                              onCardClick(o.b.card, "battlefield")
-                            }
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              onCardClick(o.b.card, "battlefield");
-                            }}
-                            draggable
-                            onDragStart={(e) =>
-                              dragApi.startDrag("battlefield", o.b.card, e)
-                            }
-                            onDragEnd={dragApi.endDrag}
-                          />
-                        );
-                      })}
+              const myNonLands = nonLands.filter((o) => o.isMine);
+              const teamNonLands = nonLands.filter((o) => !o.isMine);
+              const myLandGroups = [...landGroups.entries()].filter(
+                ([, g]) => g[0].isMine,
+              );
+              const teamLandGroups = [...landGroups.entries()].filter(
+                ([, g]) => !g[0].isMine,
+              );
+
+              return (
+                <>
+                  <div className="grid flex-1 grid-cols-[1fr_auto_1fr] items-start gap-3">
+                    <div className="flex min-w-0 flex-wrap gap-2">
+                      {myNonLands.length === 0 ? (
+                        <p className="p-2 text-xs italic text-zinc-400">
+                          no permanents (yours)
+                        </p>
+                      ) : (
+                        myNonLands.map(renderTop)
+                      )}
                     </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+                    <div
+                      aria-hidden
+                      className="self-stretch border-l border-emerald-200/60 dark:border-emerald-900/40"
+                    />
+                    <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                      {teamNonLands.length === 0 ? (
+                        <p className="p-2 text-xs italic text-zinc-400">
+                          no permanents (teammate)
+                        </p>
+                      ) : (
+                        teamNonLands.map(renderTop)
+                      )}
+                    </div>
+                  </div>
+                  {lands.length > 0 ? (
+                    <div className="mt-auto border-t border-emerald-200/60 pt-2 dark:border-emerald-900/30">
+                      <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
+                        <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+                          {myLandGroups.map(([k, g]) => renderLandGroup(k, g))}
+                        </div>
+                        <div
+                          aria-hidden
+                          className="h-12 self-end border-l border-emerald-200/60 dark:border-emerald-900/40"
+                        />
+                        <div className="flex flex-wrap items-end justify-end gap-x-6 gap-y-3">
+                          {teamLandGroups.map(([k, g]) =>
+                            renderLandGroup(k, g),
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              );
+            })()}
           </div>
         )}
       </section>

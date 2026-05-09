@@ -141,7 +141,7 @@ export function CompactCard({
         <span
           aria-label={casterDotLabel}
           title={casterDotLabel}
-          className={`pointer-events-none absolute left-0.5 top-0.5 z-10 h-2 w-2 rounded-full ring-1 ring-white/70 dark:ring-black/40 ${casterDotClass}`}
+          className={`pointer-events-none absolute left-0.5 top-0.5 z-10 h-3 w-3 rounded-full shadow ring-2 ring-white dark:ring-zinc-900 ${casterDotClass}`}
         />
       ) : null}
       {onMenu ? (

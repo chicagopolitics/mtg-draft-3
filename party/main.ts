@@ -138,6 +138,8 @@ type MatchRuntime = {
   currentGameWinner: number | null;
   /** Index (0/1) of the team whose turn it is. */
   currentTurnTeamIdx: number;
+  /** Players on the active team who've already ended their sub-turn. */
+  passedMembers: string[];
   /** Index (0/1) of the team that should start the next game. */
   nextGameStarterTeamIdx: number;
   turnNumber: number;
@@ -472,6 +474,7 @@ export default class LobbyServer implements Party.Server {
         match.nextGameStarterTeamIdx =
           match.nextGameStarterTeamIdx === 0 ? 1 : 0;
         match.turnNumber = 1;
+        match.passedMembers = [];
         match.teamLife = [match.startingLife, match.startingLife];
         for (const pid of [...match.teams[0], ...match.teams[1]]) {
           match.states[pid] = freshGameState(this.loadouts[pid]);
@@ -483,11 +486,42 @@ export default class LobbyServer implements Party.Server {
         if (this.phase !== "playing" || !this.matches) return;
         const match = this.matches.find((m) => m.id === msg.matchId);
         if (!match) return;
-        if (this.teamOf(match, playerId) < 0) return;
+        const senderTeam = this.teamOf(match, playerId);
+        if (senderTeam < 0) return;
         if (match.status === "complete" || match.currentGameWinner !== null)
           return;
-        match.currentTurnTeamIdx = match.currentTurnTeamIdx === 0 ? 1 : 0;
-        match.turnNumber += 1;
+        // Only members of the *active* team can pass — the inactive team
+        // doesn't have anything to pass on.
+        if (senderTeam !== match.currentTurnTeamIdx) return;
+
+        // Toggle this player's passed flag. Letting them un-pass keeps the
+        // UX forgiving (misclick recovery) and matches the "End my turn /
+        // Take turn back" idiom.
+        const idx = match.passedMembers.indexOf(playerId);
+        if (idx >= 0) match.passedMembers.splice(idx, 1);
+        else match.passedMembers.push(playerId);
+
+        // Once every member of the active team has passed, flip teams.
+        const activeTeam = match.teams[match.currentTurnTeamIdx];
+        const allPassed = activeTeam.every((pid) =>
+          match.passedMembers.includes(pid),
+        );
+        if (allPassed) {
+          match.currentTurnTeamIdx =
+            match.currentTurnTeamIdx === 0 ? 1 : 0;
+          match.passedMembers = [];
+          match.turnNumber += 1;
+          // Auto-draw at the start of the new active team's turn — every
+          // turn after the first one. (Game 1, turn 1's starting player
+          // doesn't draw; that's handled by the fact that we don't draw
+          // here on game start, only on flip.)
+          for (const pid of match.teams[match.currentTurnTeamIdx]) {
+            const ps = match.states[pid];
+            if (!ps || ps.deck.length === 0) continue;
+            const drawn = ps.deck.splice(0, 1);
+            ps.hand.push(...drawn);
+          }
+        }
         this.broadcastState();
         return;
       }
@@ -798,6 +832,7 @@ export default class LobbyServer implements Party.Server {
         matchWinner: null,
         currentGameWinner: null,
         currentTurnTeamIdx: 0,
+        passedMembers: [],
         nextGameStarterTeamIdx: 1,
         turnNumber: 1,
       });
@@ -1207,6 +1242,7 @@ export default class LobbyServer implements Party.Server {
         matchWinner: m.matchWinner,
         currentGameWinner: m.currentGameWinner,
         currentTurnTeamIdx: m.currentTurnTeamIdx,
+        passedMembers: m.passedMembers.slice(),
         turnNumber: m.turnNumber,
         players: allPids.map((pid): PlayPublicPlayer => {
           const player = this.players.get(pid)!;

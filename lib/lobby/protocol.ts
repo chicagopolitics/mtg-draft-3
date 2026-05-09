@@ -179,6 +179,12 @@ export type MatchPublicState = {
   currentGameWinner: number | null;
   /** Index (0 or 1) of the team whose turn it is. Cosmetic only. */
   currentTurnTeamIdx: number;
+  /**
+   * Players on the active team who have ended their personal sub-turn.
+   * In 2HG the team turn only flips once every member has passed; in 1v1
+   * this fills as soon as the single active player passes.
+   */
+  passedMembers: string[];
   /** Turn number within the current game (1-based). */
   turnNumber: number;
 };
