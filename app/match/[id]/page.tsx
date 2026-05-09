@@ -141,7 +141,9 @@ function MatchSetup({
   const me = lobby.players.find((p) => p.id === playerId);
   const isAdmin = me?.isAdmin ?? false;
 
-  const eligible = lobby.unpairedPlayerIds;
+  // Default to [] in case an out-of-date PartyKit deploy doesn't yet include
+  // this field — that would otherwise crash the .filter() below.
+  const eligible = lobby.unpairedPlayerIds ?? [];
   const playerById = new Map(lobby.players.map((p) => [p.id, p]));
   const defaultLife = lobby.config.startingLife ?? 20;
 
@@ -233,6 +235,11 @@ function MatchSetup({
             type="button"
             onClick={() => addPair(false)}
             disabled={available.length < 2}
+            title={
+              available.length < 2
+                ? `Need 2 unpaired players (currently ${available.length})`
+                : "Add a 1-on-1 match"
+            }
             className="rounded border border-zinc-400 px-3 py-1 text-sm hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800"
           >
             + Add 1v1
@@ -241,6 +248,11 @@ function MatchSetup({
             type="button"
             onClick={() => addPair(true)}
             disabled={available.length < 4}
+            title={
+              available.length < 4
+                ? `Need 4 unpaired players for 2HG (currently ${available.length})`
+                : "Add a 2-headed-giant pod"
+            }
             className="rounded border border-zinc-400 px-3 py-1 text-sm hover:bg-zinc-100 disabled:opacity-40 dark:hover:bg-zinc-800"
           >
             + Add 2HG (2v2)
