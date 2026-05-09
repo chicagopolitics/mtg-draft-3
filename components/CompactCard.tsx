@@ -224,11 +224,9 @@ export function CompactCard({
               className={`rounded px-1 text-[9px] font-bold leading-tight shadow-sm ring-1 ring-black/20 ${counterChipClass(kind)}`}
               title={`${n} ${kind} counter${n === 1 ? "" : "s"}`}
             >
-              {kind === "+1/+1"
-                ? `+${n}/+${n}`
-                : kind === "-1/-1"
-                  ? `-${n}/-${n}`
-                  : `${kind} ${n}`}
+              {/^[+-]\d+\/[+-]\d+$/.test(kind)
+                ? `${kind}${n > 1 ? ` ×${n}` : ""}`
+                : `${kind} ${n}`}
             </span>
           ))}
         </div>
@@ -238,8 +236,16 @@ export function CompactCard({
 }
 
 function counterChipClass(kind: string): string {
-  if (kind === "+1/+1") return "bg-emerald-500 text-white";
-  if (kind === "-1/-1") return "bg-rose-600 text-white";
+  // P/T-modifier counters: green if anything was added, red if anything
+  // was subtracted, neutral mix otherwise.
+  const ptMatch = /^([+-])(\d+)\/([+-])(\d+)$/.exec(kind);
+  if (ptMatch) {
+    const anyPlus = ptMatch[1] === "+" || ptMatch[3] === "+";
+    const anyMinus = ptMatch[1] === "-" || ptMatch[3] === "-";
+    if (anyPlus && !anyMinus) return "bg-emerald-500 text-white";
+    if (anyMinus && !anyPlus) return "bg-rose-600 text-white";
+    return "bg-violet-500 text-white"; // mixed (e.g., +1/-1)
+  }
   if (kind === "loyalty") return "bg-violet-500 text-white";
   if (kind === "charge") return "bg-amber-500 text-white";
   return "bg-zinc-700 text-white";

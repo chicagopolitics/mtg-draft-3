@@ -235,6 +235,20 @@ function symbolFile(inner: string): string {
 }
 
 /** Tokenize MTG rules text, splitting out `{X}`-style symbols from prose. */
+/**
+ * Split a plain-text segment into word tokens (alternating words and
+ * whitespace runs). The truncation pass binary-searches at token granularity,
+ * so finer-grained tokens here mean we can drop trailing words instead of
+ * having to drop the entire body of text when it's too long. Without this,
+ * a card like Pegasus Charger (no mana symbols, ~150 chars) would render
+ * as just "…" because the only token to drop was the whole body.
+ */
+function splitWords(s: string): string[] {
+  if (s.length === 0) return [];
+  // The capturing group keeps whitespace runs as their own elements.
+  return s.split(/(\s+)/).filter((p) => p.length > 0);
+}
+
 function tokenizeRules(text: string): RulesToken[] {
   const out: RulesToken[] = [];
   const re = /\{([^}]+)\}/g;
@@ -242,12 +256,18 @@ function tokenizeRules(text: string): RulesToken[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) {
-      out.push({ kind: "text", value: text.slice(last, m.index) });
+      for (const word of splitWords(text.slice(last, m.index))) {
+        out.push({ kind: "text", value: word });
+      }
     }
     out.push({ kind: "symbol", raw: m[0], file: symbolFile(m[1]) });
     last = re.lastIndex;
   }
-  if (last < text.length) out.push({ kind: "text", value: text.slice(last) });
+  if (last < text.length) {
+    for (const word of splitWords(text.slice(last))) {
+      out.push({ kind: "text", value: word });
+    }
+  }
   return out;
 }
 

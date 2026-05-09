@@ -1854,6 +1854,13 @@ function UtilityButtons({
         </UtilBtn>
         <UtilBtn onClick={() => send({ type: "untapAll" })}>untap all</UtilBtn>
         <UtilBtn
+          className="col-span-2"
+          onClick={() => send({ type: "createToken" })}
+          // Vanilla 0/0 — pump via counters or send to grave when it dies.
+        >
+          create token (0/0)
+        </UtilBtn>
+        <UtilBtn
           className={`col-span-2 ${
             handRevealed
               ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
@@ -2060,7 +2067,14 @@ function CounterControls({
   onClear: () => void;
 }) {
   const [customKind, setCustomKind] = useState("");
-  const standard: string[] = ["+1/+1", "-1/-1", "loyalty", "charge"];
+  const standard: string[] = [
+    "+1/+1",
+    "-1/-1",
+    "+1/+0",
+    "+0/+1",
+    "loyalty",
+    "charge",
+  ];
   const has = counters ?? {};
   const otherKinds = Object.keys(has).filter((k) => !standard.includes(k));
   return (

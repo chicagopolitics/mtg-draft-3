@@ -992,6 +992,31 @@ export default class LobbyServer implements Party.Server {
         bf.counters = undefined;
         return;
       }
+      case "createToken": {
+        // Spawn a vanilla creature token on the sender's battlefield.
+        // Defaults are "Token" 0/0 — counters can pump it. The token is a
+        // normal battlefield card (type: creature) so auras/equipment can
+        // target it via the existing attach flow.
+        const power = clamp(action.power ?? 0, 0, 99);
+        const toughness = clamp(action.toughness ?? 0, 0, 99);
+        const rawName = (action.name ?? "Token").trim().slice(0, 40);
+        const name = rawName || "Token";
+        const tokenDef: Card = {
+          id: `token-${Math.random().toString(36).slice(2, 8)}`,
+          name,
+          type: "creature",
+          subtype: undefined,
+          typeLine: "Token Creature",
+          colors: [],
+          rarity: "common",
+          text: "",
+          power,
+          toughness,
+        };
+        const [drafted] = mintDraftCards([tokenDef]);
+        myState.battlefield.push({ card: drafted, tapped: false });
+        return;
+      }
       case "revealHand": {
         // Toggle on the sender's own state only — you can't reveal your
         // teammate's hand for them.

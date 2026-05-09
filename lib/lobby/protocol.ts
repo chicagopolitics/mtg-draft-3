@@ -94,21 +94,47 @@ export type ZoneTarget =
   | "exile";
 
 /** Standard counter kinds with quick-action buttons in the UI. */
-export const STANDARD_COUNTERS = ["+1/+1", "-1/-1", "loyalty", "charge"] as const;
+export const STANDARD_COUNTERS = [
+  "+1/+1",
+  "-1/-1",
+  "+1/+0",
+  "+0/+1",
+  "loyalty",
+  "charge",
+] as const;
 
 /**
- * Returns the net P/T delta from a card's counter pile. +1/+1 counters add to
- * both, -1/-1 counters subtract. Other counter types don't affect stats.
+ * Matches any P/T-modifier counter name like `+1/+1`, `-1/-1`, `+1/+0`,
+ * `+0/+1`, `+2/-1`, etc. Captures: power-sign, power-amount, toughness-sign,
+ * toughness-amount.
+ */
+const PT_COUNTER_RE = /^([+-])(\d+)\/([+-])(\d+)$/;
+
+/**
+ * Returns the net P/T delta from a card's counter pile. Any counter whose
+ * name matches the `+N/+M` pattern (signs and digits in any combo) modifies
+ * stats accordingly; non-matching names (loyalty, charge, custom) don't.
  */
 export function counterDelta(counters?: Record<string, number>): {
   power: number;
   toughness: number;
 } {
   if (!counters) return { power: 0, toughness: 0 };
-  const plus = counters["+1/+1"] ?? 0;
-  const minus = counters["-1/-1"] ?? 0;
-  const d = plus - minus;
-  return { power: d, toughness: d };
+  let power = 0;
+  let toughness = 0;
+  for (const [kind, count] of Object.entries(counters)) {
+    const m = PT_COUNTER_RE.exec(kind);
+    if (!m) continue;
+    const pSign = m[1] === "+" ? 1 : -1;
+    const pAmt = parseInt(m[2], 10);
+    const tSign = m[3] === "+" ? 1 : -1;
+    const tAmt = parseInt(m[4], 10);
+    if (Number.isFinite(pAmt) && Number.isFinite(tAmt)) {
+      power += pSign * pAmt * count;
+      toughness += tSign * tAmt * count;
+    }
+  }
+  return { power, toughness };
 }
 
 export type BattlefieldCard = {
@@ -217,6 +243,16 @@ export type PlayAction =
       delta: number;
     }
   | { type: "clearCounters"; instanceId: string }
+  | {
+      /** Spawn a vanilla creature token on the sender's battlefield. Defaults
+       * to a 0/0 colorless "Token" — pump it with counters or rename via the
+       * card-action modal as needed. Tokens are valid attach targets like
+       * any other creature. */
+      type: "createToken";
+      name?: string;
+      power?: number;
+      toughness?: number;
+    }
   | {
       /** Toggle whether the sender's hand is broadcast to other players. */
       type: "revealHand";
