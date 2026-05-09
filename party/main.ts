@@ -143,6 +143,17 @@ type MatchRuntime = {
   /** Index (0/1) of the team that should start the next game. */
   nextGameStarterTeamIdx: number;
   turnNumber: number;
+  /** Active steal requests with cleanup timers; trimmed on response/expiry. */
+  pendingSteals: ServerPendingSteal[];
+};
+
+type ServerPendingSteal = {
+  id: string;
+  instanceId: string;
+  cardName: string;
+  requesterId: string;
+  ownerId: string;
+  expireTimer: ReturnType<typeof setTimeout>;
 };
 
 export default class LobbyServer implements Party.Server {
@@ -476,6 +487,9 @@ export default class LobbyServer implements Party.Server {
         match.turnNumber = 1;
         match.passedMembers = [];
         match.teamLife = [match.startingLife, match.startingLife];
+        // Cancel any pending steal timers — the match state is wiped.
+        for (const s of match.pendingSteals) clearTimeout(s.expireTimer);
+        match.pendingSteals = [];
         for (const pid of [...match.teams[0], ...match.teams[1]]) {
           match.states[pid] = freshGameState(this.loadouts[pid]);
         }
@@ -528,6 +542,11 @@ export default class LobbyServer implements Party.Server {
       case "returnToMatching": {
         if (!player.isAdmin) return;
         if (this.phase !== "playing" || !this.matches) return;
+        // Cancel any outstanding steal timers — the matches array is about
+        // to be dropped and we don't want callbacks firing on stale state.
+        for (const m of this.matches) {
+          for (const s of m.pendingSteals) clearTimeout(s.expireTimer);
+        }
         this.matches = null;
         this.phase = "matching";
         this.broadcastState();
@@ -835,6 +854,7 @@ export default class LobbyServer implements Party.Server {
         passedMembers: [],
         nextGameStarterTeamIdx: 1,
         turnNumber: 1,
+        pendingSteals: [],
       });
     }
     return { ok: true, matches: built };
@@ -1017,6 +1037,71 @@ export default class LobbyServer implements Party.Server {
         myState.battlefield.push({ card: drafted, tapped: false });
         return;
       }
+      case "requestSteal": {
+        // Find the card's current owner anywhere on the table.
+        const ownerId = findBattlefieldOwnerAnywhere(action.instanceId);
+        if (!ownerId) return;
+        // No need to "steal" from your own team — they'd just say yes.
+        if (match.teams[senderTeamIdx].includes(ownerId)) return;
+        // Don't stack duplicate requests for the same card.
+        if (
+          match.pendingSteals.some((s) => s.instanceId === action.instanceId)
+        ) {
+          return;
+        }
+        const ownerState = match.states[ownerId];
+        const card = ownerState?.battlefield.find(
+          (b) => b.card.instanceId === action.instanceId,
+        );
+        if (!card) return;
+        const stealId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        const expireTimer = setTimeout(() => {
+          const i = match.pendingSteals.findIndex((s) => s.id === stealId);
+          if (i >= 0) {
+            match.pendingSteals.splice(i, 1);
+            this.broadcastState();
+          }
+        }, 30000);
+        match.pendingSteals.push({
+          id: stealId,
+          instanceId: action.instanceId,
+          cardName: card.card.name,
+          requesterId: playerId,
+          ownerId,
+          expireTimer,
+        });
+        return;
+      }
+      case "respondSteal": {
+        const i = match.pendingSteals.findIndex(
+          (s) => s.id === action.stealId,
+        );
+        if (i < 0) return;
+        const pending = match.pendingSteals[i];
+        // Only the card's owner may respond.
+        if (pending.ownerId !== playerId) return;
+        clearTimeout(pending.expireTimer);
+        match.pendingSteals.splice(i, 1);
+
+        if (!action.accept) return;
+
+        // Accept: move the BattlefieldCard from owner → requester. Preserves
+        // tapped state, counters, and any `attachedTo` references. Stamps
+        // originalOwnerId so the card routes back on death.
+        const ownerState = match.states[pending.ownerId];
+        const requesterState = match.states[pending.requesterId];
+        if (!ownerState || !requesterState) return;
+        const cardIdx = ownerState.battlefield.findIndex(
+          (b) => b.card.instanceId === pending.instanceId,
+        );
+        if (cardIdx < 0) return; // card disappeared (e.g., owner moved it)
+        const [bf] = ownerState.battlefield.splice(cardIdx, 1);
+        // Don't overwrite an existing originalOwnerId — a re-steal still
+        // remembers the true original caster.
+        if (!bf.originalOwnerId) bf.originalOwnerId = pending.ownerId;
+        requesterState.battlefield.push(bf);
+        return;
+      }
       case "revealHand": {
         // Toggle on the sender's own state only — you can't reveal your
         // teammate's hand for them.
@@ -1034,6 +1119,17 @@ export default class LobbyServer implements Party.Server {
           ownerId = o;
         }
         const ownerState = match.states[ownerId];
+
+        // Snapshot originalOwnerId before removing so we can route the card
+        // back to its true owner's pile on death/bounce.
+        let originalOwnerId: string | undefined;
+        if (action.from === "battlefield") {
+          const bf = ownerState.battlefield.find(
+            (b) => b.card.instanceId === action.instanceId,
+          );
+          originalOwnerId = bf?.originalOwnerId;
+        }
+
         const card = removeFromZone(ownerState, action.from, action.instanceId);
         if (!card) return;
 
@@ -1053,12 +1149,27 @@ export default class LobbyServer implements Party.Server {
           }
         }
 
+        // Route stolen cards (originalOwnerId set) to the true owner's pile
+        // when leaving the battlefield. Battlefield→battlefield moves keep
+        // the card on the current controller's side and re-stamp the
+        // originalOwnerId on the new BattlefieldCard.
+        let destState = ownerState;
+        if (
+          originalOwnerId &&
+          originalOwnerId !== ownerId &&
+          action.to !== "battlefield"
+        ) {
+          const target = match.states[originalOwnerId];
+          if (target) destState = target;
+        }
+
         placeInZone(
-          ownerState,
+          destState,
           action.to,
           card,
           action.tapped ?? false,
           validatedAttach,
+          originalOwnerId,
         );
         return;
       }
@@ -1269,6 +1380,15 @@ export default class LobbyServer implements Party.Server {
         currentTurnTeamIdx: m.currentTurnTeamIdx,
         passedMembers: m.passedMembers.slice(),
         turnNumber: m.turnNumber,
+        pendingSteals: m.pendingSteals.map((s) => ({
+          id: s.id,
+          instanceId: s.instanceId,
+          cardName: s.cardName,
+          requesterId: s.requesterId,
+          requesterName: this.players.get(s.requesterId)?.name ?? "?",
+          ownerId: s.ownerId,
+          ownerName: this.players.get(s.ownerId)?.name ?? "?",
+        })),
         players: allPids.map((pid): PlayPublicPlayer => {
           const player = this.players.get(pid)!;
           const ps = m.states[pid];
@@ -1368,6 +1488,7 @@ function placeInZone(
   card: DraftCard,
   tapped: boolean,
   attachedTo: string | null = null,
+  originalOwnerId?: string,
 ) {
   switch (target) {
     case "deck-top":
@@ -1379,17 +1500,20 @@ function placeInZone(
     case "hand":
       ps.hand.push(card);
       return;
-    case "battlefield":
-      // Only honor attachedTo if the target card actually exists on the battlefield.
-      if (
+    case "battlefield": {
+      // Re-stamp originalOwnerId so battlefield→battlefield moves don't
+      // forget that the card was stolen.
+      const validAttach =
         attachedTo &&
         ps.battlefield.some((b) => b.card.instanceId === attachedTo)
-      ) {
-        ps.battlefield.push({ card, tapped, attachedTo });
-      } else {
-        ps.battlefield.push({ card, tapped });
-      }
+          ? attachedTo
+          : undefined;
+      const bf: BattlefieldCard = { card, tapped };
+      if (validAttach) bf.attachedTo = validAttach;
+      if (originalOwnerId) bf.originalOwnerId = originalOwnerId;
+      ps.battlefield.push(bf);
       return;
+    }
     case "graveyard":
       ps.graveyard.push(card);
       return;

@@ -52,7 +52,12 @@ type PeekTarget = {
 type DropTarget = "hand" | "battlefield" | "graveyard";
 
 type DragApi = {
-  startDrag: (from: Zone, card: DraftCard, e: React.DragEvent) => void;
+  startDrag: (
+    from: Zone,
+    card: DraftCard,
+    ownerId: string,
+    e: React.DragEvent,
+  ) => void;
   endDrag: () => void;
   isValidDropFor: (target: DropTarget) => boolean;
   handleDrop: (target: DropTarget) => void;
@@ -449,6 +454,8 @@ function PlayBoard({
     from: Zone;
     instanceId: string;
     card: DraftCard;
+    /** Whose card it is. Used to detect cross-team drags (steals). */
+    ownerId: string;
   } | null>(null);
 
   if (!me) return <Centered>not seated at this table.</Centered>;
@@ -476,17 +483,42 @@ function PlayBoard({
   }
 
   // Drag-and-drop API for zone moves and aura/equipment attachment.
-  function startDrag(from: Zone, card: DraftCard, e: React.DragEvent) {
+  function startDrag(
+    from: Zone,
+    card: DraftCard,
+    ownerId: string,
+    e: React.DragEvent,
+  ) {
     e.dataTransfer.effectAllowed = "move";
     // Some browsers need data set for the drag to take effect.
     e.dataTransfer.setData("text/plain", card.instanceId);
-    setDragging({ from, instanceId: card.instanceId, card });
+    setDragging({ from, instanceId: card.instanceId, card, ownerId });
   }
   function endDrag() {
     setDragging(null);
   }
+  /**
+   * True when the dragging card belongs to an opposing-team player. Used
+   * to detect cross-team drags that should fire a steal request rather
+   * than a regular move.
+   */
+  function isOppDrag(): boolean {
+    if (!dragging) return false;
+    if (!isTwoHeaded && dragging.ownerId === playerId) return false;
+    const myTeam = match.teams[myTeamIdx];
+    return !myTeam.includes(dragging.ownerId);
+  }
   function isValidDropFor(target: DropTarget): boolean {
     if (!dragging) return false;
+    // Cross-team drag of an opp's battlefield card onto your battlefield
+    // is a steal request, not a move.
+    if (
+      dragging.from === "battlefield" &&
+      target === "battlefield" &&
+      isOppDrag()
+    ) {
+      return true;
+    }
     if (dragging.from === target) return false;
     if (dragging.from === "hand")
       return target === "battlefield" || target === "graveyard";
@@ -498,6 +530,16 @@ function PlayBoard({
     const drag = dragging;
     setDragging(null);
     if (!drag) return;
+    // Steal request: dropping an opp's battlefield card on your battlefield
+    // — server will queue a confirm/deny request to the owner.
+    if (
+      drag.from === "battlefield" &&
+      target === "battlefield" &&
+      !match.teams[myTeamIdx].includes(drag.ownerId)
+    ) {
+      send({ type: "requestSteal", instanceId: drag.instanceId });
+      return;
+    }
     if (!isValidDropMove(drag.from, target)) return;
     send({
       type: "move",
@@ -895,6 +937,83 @@ function PlayBoard({
           </div>
         </div>
       ) : null}
+
+      {/*
+        Steal request UI: the OWNER of a pending steal sees a modal asking
+        them to confirm or deny, while the REQUESTER sees a small status
+        chip at the top of the play area saying "waiting for X to confirm".
+      */}
+      {(() => {
+        const stealsForMe = match.pendingSteals.filter(
+          (s) => s.ownerId === playerId,
+        );
+        const myRequests = match.pendingSteals.filter(
+          (s) => s.requesterId === playerId,
+        );
+        return (
+          <>
+            {stealsForMe.map((s) => (
+              <div
+                key={s.id}
+                className="absolute inset-0 z-50 grid place-items-center bg-black/60 p-4"
+              >
+                <div className="max-w-sm space-y-3 rounded-2xl bg-white p-6 text-center shadow-xl dark:bg-zinc-900">
+                  <h2 className="text-lg font-bold">
+                    {s.requesterName} wants to take your{" "}
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {s.cardName}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-zinc-500">
+                    Allowing it moves the card to their battlefield. It will
+                    return to your graveyard / hand / etc. when it dies.
+                  </p>
+                  <div className="flex justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        send({
+                          type: "respondSteal",
+                          stealId: s.id,
+                          accept: true,
+                        })
+                      }
+                      className="rounded bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+                    >
+                      allow
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        send({
+                          type: "respondSteal",
+                          stealId: s.id,
+                          accept: false,
+                        })
+                      }
+                      className="rounded border border-red-400 px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                    >
+                      deny
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {myRequests.length > 0 ? (
+              <div className="pointer-events-none absolute left-1/2 top-2 z-30 -translate-x-1/2">
+                {myRequests.map((s) => (
+                  <div
+                    key={s.id}
+                    className="rounded-full bg-amber-500/90 px-4 py-1.5 text-xs font-semibold text-white shadow-lg"
+                  >
+                    waiting for {s.ownerName} to respond to {s.cardName}…
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </>
+        );
+      })()}
     </div>
   );
 }
@@ -1059,6 +1178,18 @@ function OpponentArea({
                         counters={parent.counters}
                         size="xs"
                         highlight={isAttachTarget}
+                        // Allow cross-team drag → triggers a steal request
+                        // (server confirms with the owner before moving).
+                        draggable
+                        onDragStart={(e) =>
+                          dragApi.startDrag(
+                            "battlefield",
+                            parent.card,
+                            player.id,
+                            e,
+                          )
+                        }
+                        onDragEnd={dragApi.endDrag}
                         onContextMenu={(e) => {
                           e.preventDefault();
                           onCardPeek(
@@ -1113,6 +1244,16 @@ function OpponentArea({
                                 size="xs"
                                 casterDotClass={dot.casterDotClass}
                                 casterDotLabel={dot.casterDotLabel}
+                                draggable
+                                onDragStart={(e) =>
+                                  dragApi.startDrag(
+                                    "battlefield",
+                                    kid.b.card,
+                                    kid.ownerId,
+                                    e,
+                                  )
+                                }
+                                onDragEnd={dragApi.endDrag}
                                 onContextMenu={(e) => {
                                   e.preventDefault();
                                   onCardPeek(
@@ -1157,6 +1298,16 @@ function OpponentArea({
                         tapped={b.tapped}
                         size="xs"
                         style={{ marginLeft: i === 0 ? 0 : "-3.5rem" }}
+                        draggable
+                        onDragStart={(e) =>
+                          dragApi.startDrag(
+                            "battlefield",
+                            b.card,
+                            player.id,
+                            e,
+                          )
+                        }
+                        onDragEnd={dragApi.endDrag}
                         onContextMenu={(e) => {
                           e.preventDefault();
                           onCardPeek(b.card, b.tapped, b.counters);
@@ -1307,7 +1458,9 @@ function YourArea({
         }
         onMenu={() => onCardClick(o.b.card, "battlefield")}
         draggable
-        onDragStart={(e) => dragApi.startDrag("battlefield", o.b.card, e)}
+        onDragStart={(e) =>
+          dragApi.startDrag("battlefield", o.b.card, o.ownerId, e)
+        }
         onDragEnd={dragApi.endDrag}
         highlight={isAttachTarget}
         onDragOver={(e) => {
@@ -1462,7 +1615,12 @@ function YourArea({
                         }}
                         draggable
                         onDragStart={(e) =>
-                          dragApi.startDrag("battlefield", o.b.card, e)
+                          dragApi.startDrag(
+                            "battlefield",
+                            o.b.card,
+                            o.ownerId,
+                            e,
+                          )
                         }
                         onDragEnd={dragApi.endDrag}
                       />
@@ -1596,7 +1754,7 @@ function YourArea({
                   key={c.instanceId}
                   onClick={() => onCardClick(c, "hand")}
                   draggable
-                  onDragStart={(e) => dragApi.startDrag("hand", c, e)}
+                  onDragStart={(e) => dragApi.startDrag("hand", c, me.id, e)}
                   onDragEnd={dragApi.endDrag}
                   style={{ marginLeft: i === 0 ? 0 : "-10rem" }}
                   className="relative shrink-0 rounded transition-transform duration-150 hover:z-20 hover:-translate-y-8 hover:drop-shadow-2xl focus:z-20 focus:outline-none focus:ring-2 focus:ring-emerald-500"

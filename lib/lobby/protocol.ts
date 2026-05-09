@@ -149,6 +149,14 @@ export type BattlefieldCard = {
    * Counters are cleared when the card leaves the battlefield.
    */
   counters?: Record<string, number>;
+  /**
+   * The card's original owner. Only set when the card has been stolen via
+   * the steal-request flow — for unstolen cards this is undefined and the
+   * "current battlefield" implicitly tells you the owner. When the card
+   * leaves the battlefield (graveyard/exile/hand/deck), it routes back to
+   * this player's pile so ownership rules are preserved.
+   */
+  originalOwnerId?: string;
 };
 
 export type PlayPublicPlayer = {
@@ -213,6 +221,11 @@ export type MatchPublicState = {
   passedMembers: string[];
   /** Turn number within the current game (1-based). */
   turnNumber: number;
+  /**
+   * Outstanding cross-team steal requests awaiting confirm/deny from each
+   * request's owner. Auto-expire after a short timeout server-side.
+   */
+  pendingSteals: PendingSteal[];
 };
 
 export type MatchPairing = {
@@ -221,6 +234,22 @@ export type MatchPairing = {
   bestOf: BestOf;
   /** Starting life pool per team for this match. */
   startingLife: number;
+};
+
+/**
+ * A pending steal request — the requester wants to take a card from another
+ * player's battlefield. Visible to all clients in the match: the card's
+ * owner sees a confirm/deny modal, the requester sees a "waiting" status,
+ * and other players just see that a steal is pending.
+ */
+export type PendingSteal = {
+  id: string;
+  instanceId: string;
+  cardName: string;
+  requesterId: string;
+  requesterName: string;
+  ownerId: string;
+  ownerName: string;
 };
 
 export type PlayAction =
@@ -252,6 +281,19 @@ export type PlayAction =
       name?: string;
       power?: number;
       toughness?: number;
+    }
+  | {
+      /** Ask another player to let you take their battlefield card. Server
+       * adds a pending entry, owner gets a modal, then either accept (card
+       * moves to sender's battlefield, originalOwnerId stamped) or deny. */
+      type: "requestSteal";
+      instanceId: string;
+    }
+  | {
+      /** Owner's response to an outstanding steal request. */
+      type: "respondSteal";
+      stealId: string;
+      accept: boolean;
     }
   | {
       /** Toggle whether the sender's hand is broadcast to other players. */
