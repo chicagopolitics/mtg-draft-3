@@ -14,6 +14,7 @@ import {
   isValidLobbyId,
 } from "@/lib/lobby/protocol";
 import { CardBrowser } from "@/components/CardBrowser";
+import { DeckPresetBrowser } from "@/components/DeckPresetBrowser";
 import { parseDecklist } from "@/lib/cards/decklist";
 import type { Card } from "@/lib/cards/schema";
 import {
@@ -270,6 +271,7 @@ function Construct({
   const [text, setText] = useState(priv.decklist);
   const [dirty, setDirty] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [presetOpen, setPresetOpen] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // If server sends us a fresh state (e.g., reconnect), accept it unless
@@ -363,13 +365,22 @@ function Construct({
             >
               your decklist
             </label>
-            <button
-              type="button"
-              onClick={() => setBrowserOpen(true)}
-              className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >
-              browse cards…
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setPresetOpen(true)}
+                className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                load preset…
+              </button>
+              <button
+                type="button"
+                onClick={() => setBrowserOpen(true)}
+                className="rounded border border-zinc-300 px-2 py-1 text-xs font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                browse cards…
+              </button>
+            </div>
           </div>
           <textarea
             id="decklist"
@@ -489,6 +500,33 @@ function Construct({
           deckCounts={decklistCounts(text)}
           onAdd={addCardFromBrowser}
           onClose={() => setBrowserOpen(false)}
+        />
+      ) : null}
+
+      {presetOpen ? (
+        <DeckPresetBrowser
+          onClose={() => setPresetOpen(false)}
+          onPick={(preset) => {
+            // Confirm before clobbering existing edits.
+            const hasContent = text.trim().length > 0;
+            if (
+              hasContent &&
+              !confirm(
+                `Replace your current decklist with "${preset.name}"?`,
+              )
+            ) {
+              return;
+            }
+            setText(preset.decklist);
+            setDirty(true);
+            // Flush quickly — picking a preset is a deliberate action.
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            debounceRef.current = setTimeout(() => {
+              pushDecklist(preset.decklist);
+              setDirty(false);
+            }, 100);
+            setPresetOpen(false);
+          }}
         />
       ) : null}
     </main>

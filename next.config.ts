@@ -5,11 +5,13 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: import.meta.dirname,
   },
-  // Bundle the Sets/ MTGJSON files into the serverless function tree so
-  // routes that read them work at runtime on Vercel.
+  // Bundle the Sets/ MTGJSON files and Decks/ MWDECK files into the
+  // serverless function tree so routes that read them work at runtime on
+  // Vercel.
   outputFileTracingIncludes: {
     "/api/sets/**/*": ["./Sets/**/*.json"],
     "/api/cards/**/*": ["./Sets/**/*.json"],
+    "/api/decks/**/*": ["./Decks/**/*.mwDeck"],
   },
 };
 
