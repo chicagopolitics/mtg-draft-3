@@ -418,10 +418,22 @@ function FitText({ text, flavor }: { text: string; flavor?: string }) {
   );
 }
 
-export function CardView({ card }: { card: Card }) {
+export function CardView({
+  card,
+  compact = false,
+}: {
+  card: Card;
+  /**
+   * Smaller variant used in the deckbuilder grid so 4–5 cards fit per row
+   * instead of 2–3. Rules box is still legible because FitText auto-shrinks.
+   */
+  compact?: boolean;
+}) {
+  // w-40 ≈ 160px, h-[16rem] = 256px; vs full size w-60 (240) × h-[22rem] (352).
+  const sizeClasses = compact ? "h-[16rem] w-40 p-2 gap-1" : "h-[22rem] w-60 p-3 gap-2";
   return (
     <article
-      className={`flex h-[22rem] w-60 flex-col gap-2 rounded-lg bg-white bg-gradient-to-br p-3 text-zinc-900 shadow-sm ring-2 dark:bg-zinc-900 dark:text-zinc-100 ${frameGradient(card)} ${RARITY_RING[card.rarity]}`}
+      className={`flex flex-col rounded-lg bg-white bg-gradient-to-br text-zinc-900 shadow-sm ring-2 dark:bg-zinc-900 dark:text-zinc-100 ${sizeClasses} ${frameGradient(card)} ${RARITY_RING[card.rarity]}`}
     >
       <header className="flex shrink-0 items-center gap-2">
         <h3 className="min-w-0 flex-1 truncate text-sm font-semibold leading-tight">

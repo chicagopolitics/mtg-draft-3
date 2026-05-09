@@ -539,18 +539,17 @@ function CardGrid({
   onClick: (card: DraftCard) => void;
 }) {
   return (
-    // 15rem (240px) matches `CardView`'s fixed `w-60`. Without that match,
-    // narrower cells let the card overflow horizontally and the scrollbar
-    // would clip the rightmost column. `justify-items-center` centers the
-    // card when a stretched cell ends up wider than 240px.
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(15rem,1fr))] justify-items-center gap-2">
+    // 10rem (160px) matches `CardView`'s compact width. Justify-items-center
+    // keeps cards tidy when the stretched cell ends up wider than 160px on
+    // bigger screens.
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] justify-items-center gap-2">
       {cards.map((card) => (
         <button
           key={card.instanceId}
           onClick={() => onClick(card)}
           className="rounded transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
         >
-          <CardView card={card} />
+          <CardView card={card} compact />
         </button>
       ))}
     </div>
