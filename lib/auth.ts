@@ -20,6 +20,15 @@ import { db } from "@/lib/db/client";
 import { accounts, sessions, users, verificationTokens } from "@/lib/db/schema";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  debug: process.env.NODE_ENV !== "production",
+  logger: {
+    error: (code, ...message) => {
+      console.error("[AUTH ERROR]", code, ...message);
+    },
+    warn: (code, ...message) => {
+      console.warn("[AUTH WARN]", code, ...message);
+    },
+  },
   secret: process.env.AUTH_SECRET,
   adapter: DrizzleAdapter(db, {
     usersTable: users,
