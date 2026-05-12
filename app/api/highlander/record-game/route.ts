@@ -24,6 +24,8 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/lib/db/client";
+
+export const dynamic = "force-dynamic";
 import { decks } from "@/lib/db/schema";
 
 const BodySchema = z.object({

@@ -13,6 +13,8 @@
 import { desc, eq } from "drizzle-orm";
 
 import { auth } from "@/lib/auth";
+
+export const dynamic = "force-dynamic";
 import { db } from "@/lib/db/client";
 import { deckCards, decks } from "@/lib/db/schema";
 
