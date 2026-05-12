@@ -8,15 +8,23 @@ import { redirect } from "next/navigation";
 
 import { auth, signIn } from "@/lib/auth";
 
+const ERROR_MESSAGES: Record<string, string> = {
+  OAuthCallback: "Discord sign-in failed — check the app's redirect URI.",
+  OAuthAccountNotLinked:
+    "That Discord account isn't linked to an existing user. Try a different method.",
+  Configuration: "Auth configuration error — check server logs.",
+  Default: "Something went wrong during sign-in. Please try again.",
+};
+
 export default async function SignInPage({
   searchParams,
 }: {
-  searchParams: Promise<{ callbackUrl?: string }>;
+  searchParams: Promise<{ callbackUrl?: string; error?: string }>;
 }) {
   const session = await auth();
   if (session?.user) redirect("/profile");
 
-  const { callbackUrl } = await searchParams;
+  const { callbackUrl, error } = await searchParams;
 
   async function discordSignIn() {
     "use server";
@@ -45,6 +53,15 @@ export default async function SignInPage({
             need an account.
           </p>
         </header>
+
+        {error && (
+          <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+            {ERROR_MESSAGES[error] ?? ERROR_MESSAGES.Default}
+            <span className="block text-xs text-red-500 mt-1">
+              Error code: {error}
+            </span>
+          </div>
+        )}
 
         {/* Discord OAuth — primary */}
         <form action={discordSignIn}>
