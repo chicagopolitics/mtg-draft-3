@@ -122,6 +122,11 @@ export default function Home() {
             preview the mock card set →
           </a>
         </p>
+        <p className="text-center text-xs text-zinc-400">
+          <a className="underline" href="/profile">
+            sign in for Highlander persistent decks →
+          </a>
+        </p>
       </main>
     </div>
   );

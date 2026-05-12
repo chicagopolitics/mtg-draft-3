@@ -23,6 +23,8 @@ import {
   type DraftDirection,
   type DraftPrivateState,
   type DraftPublicState,
+  type HighlanderPrivateState,
+  type HighlanderPublicState,
   type LobbyConfig,
   type LobbyPhase,
   type LobbyState,
@@ -97,6 +99,22 @@ type ConstructRuntime = {
   states: Record<string, ConstructPlayerState>;
 };
 
+type HighlanderPlayerState = {
+  /** ID of the persistent deck the player chose (null while still picking). */
+  deckId: string | null;
+  deckName: string | null;
+  /** Resolved & minted cards sent by the client. */
+  cards: DraftCard[];
+  wins: number;
+  losses: number;
+  ready: boolean;
+};
+
+type HighlanderRuntime = {
+  seatOrder: string[];
+  states: Record<string, HighlanderPlayerState>;
+};
+
 type PlayingPlayerState = {
   deck: DraftCard[];
   hand: DraftCard[];
@@ -118,6 +136,12 @@ type Loadout = {
    * for a player's deck fall back to the artless MOCK_SET defs.
    */
   basicLandDefs?: Partial<Record<Color, Card>>;
+  /**
+   * The persistent Highlander deck id, when the loadout came from a player's
+   * saved deck. Used in Phase 3 to record per-game W/L against the deck row.
+   * Undefined for booster/sealed/constructed loadouts.
+   */
+  deckId?: string;
 };
 
 type MatchRuntime = {
@@ -176,6 +200,7 @@ export default class LobbyServer implements Party.Server {
   private draft: DraftRuntime | null = null;
   private deckbuild: DeckbuildRuntime | null = null;
   private construct: ConstructRuntime | null = null;
+  private highlander: HighlanderRuntime | null = null;
   /** Loadouts captured at end of deckbuild; used for every game in a player's matches. */
   private loadouts: Record<string, Loadout> | null = null;
   private matches: MatchRuntime[] | null = null;
@@ -327,6 +352,8 @@ export default class LobbyServer implements Party.Server {
             this.startSealed(ids);
           } else if (this.config.format === "constructed") {
             this.startConstructed(ids);
+          } else if (this.config.format === "highlander") {
+            this.startHighlander(ids);
           } else {
             this.startDraft(ids);
           }
@@ -393,6 +420,32 @@ export default class LobbyServer implements Party.Server {
         this.broadcastState();
         return;
       }
+      case "setHighlanderDeck": {
+        if (this.phase !== "highlander" || !this.highlander) return;
+        const hs = this.highlander.states[playerId];
+        if (!hs) return;
+        const deckId = msg.deckId.slice(0, 64);
+        const deckName = msg.deckName.slice(0, 80);
+        const parsed = z
+          .array(DraftCardSchema)
+          .max(500)
+          .safeParse(msg.cards ?? []);
+        if (!parsed.success) {
+          this.send(sender, {
+            type: "error",
+            message: "Invalid Highlander deck payload",
+          });
+          return;
+        }
+        hs.deckId = deckId;
+        hs.deckName = deckName;
+        hs.cards = parsed.data;
+        hs.wins = typeof msg.wins === "number" && isFinite(msg.wins) ? Math.max(0, Math.floor(msg.wins)) : 0;
+        hs.losses = typeof msg.losses === "number" && isFinite(msg.losses) ? Math.max(0, Math.floor(msg.losses)) : 0;
+        hs.ready = false; // reset ready when deck changes
+        this.broadcastState();
+        return;
+      }
       case "setReady": {
         if (this.phase === "deckbuilding" && this.deckbuild) {
           const dbState = this.deckbuild.states[playerId];
@@ -410,6 +463,15 @@ export default class LobbyServer implements Party.Server {
           this.broadcastState();
           return;
         }
+        if (this.phase === "highlander" && this.highlander) {
+          const hs = this.highlander.states[playerId];
+          if (!hs) return;
+          // Ready only allowed once a deck is chosen.
+          if (msg.ready && hs.cards.length === 0) return;
+          hs.ready = !!msg.ready;
+          this.broadcastState();
+          return;
+        }
         return;
       }
       case "startPlay": {
@@ -421,6 +483,11 @@ export default class LobbyServer implements Party.Server {
         }
         if (this.phase === "constructing" && this.construct) {
           this.transitionToMatchingFromConstruct();
+          this.broadcastState();
+          return;
+        }
+        if (this.phase === "highlander" && this.highlander) {
+          this.transitionToMatchingFromHighlander();
           this.broadcastState();
           return;
         }
@@ -622,6 +689,49 @@ export default class LobbyServer implements Party.Server {
     }
     this.construct = { seatOrder, states };
     this.phase = "constructing";
+  }
+
+  /**
+   * Highlander: each player picks a persistent 100-card singleton deck from
+   * their profile. Cards are resolved client-side and sent via setHighlanderDeck.
+   */
+  private startHighlander(playerIds: string[]) {
+    const seatOrder = shuffle(playerIds);
+    const states: Record<string, HighlanderPlayerState> = {};
+    for (const pid of seatOrder) {
+      states[pid] = {
+        deckId: null,
+        deckName: null,
+        cards: [],
+        wins: 0,
+        losses: 0,
+        ready: false,
+      };
+    }
+    this.highlander = { seatOrder, states };
+    this.phase = "highlander";
+  }
+
+  /**
+   * Highlander → matching. The persistent deck is the entire loadout —
+   * no basics slider; any basics are already in the 100-card list.
+   */
+  private transitionToMatchingFromHighlander() {
+    if (!this.highlander) return;
+    const loadouts: Record<string, Loadout> = {};
+    for (const pid of this.highlander.seatOrder) {
+      const hs = this.highlander.states[pid];
+      loadouts[pid] = {
+        deckCards: hs.cards,
+        basicLands: { ...ZERO_LANDS },
+        // Carry the persistent deck id through so Phase 3 can record W/L.
+        deckId: hs.deckId ?? undefined,
+      };
+    }
+    this.loadouts = loadouts;
+    this.highlander = null;
+    this.matches = null;
+    this.phase = "matching";
   }
 
   /**
@@ -1233,6 +1343,7 @@ export default class LobbyServer implements Party.Server {
       draft: this.draft ? this.draftPublicSnapshot() : null,
       deckbuild: this.deckbuild ? this.deckbuildPublicSnapshot() : null,
       construct: this.construct ? this.constructPublicSnapshot() : null,
+      highlander: this.highlander ? this.highlanderPublicSnapshot() : null,
       play: null,
       matches: this.matches ? this.matchesPublicSnapshot() : null,
       unpairedPlayerIds: this.unpairedPlayerIds(),
@@ -1362,6 +1473,42 @@ export default class LobbyServer implements Party.Server {
     };
   }
 
+  private highlanderPublicSnapshot(): HighlanderPublicState {
+    if (!this.highlander) throw new Error("no highlander");
+    const hl = this.highlander;
+    return {
+      players: hl.seatOrder.map((pid) => {
+        const player = this.players.get(pid)!;
+        const hs = hl.states[pid];
+        return {
+          id: pid,
+          name: player.name,
+          deckId: hs.deckId,
+          deckName: hs.deckName,
+          deckSize: hs.cards.length,
+          wins: hs.wins,
+          losses: hs.losses,
+          ready: hs.ready,
+          connected: player.connId !== null,
+        };
+      }),
+    };
+  }
+
+  private highlanderPrivateFor(
+    playerId: string,
+  ): HighlanderPrivateState | null {
+    if (!this.highlander) return null;
+    const hs = this.highlander.states[playerId];
+    if (!hs) return null;
+    return {
+      deckId: hs.deckId,
+      deckName: hs.deckName,
+      deckSize: hs.cards.length,
+      ready: hs.ready,
+    };
+  }
+
   private matchesPublicSnapshot(): MatchPublicState[] {
     if (!this.matches) return [];
     return this.matches.map((m) => {
@@ -1441,6 +1588,9 @@ export default class LobbyServer implements Party.Server {
           ? this.deckbuildPrivateFor(playerId)
           : null,
         constructPrivate: playerId ? this.constructPrivateFor(playerId) : null,
+        highlanderPrivate: playerId
+          ? this.highlanderPrivateFor(playerId)
+          : null,
         playPrivate: playerId ? this.playPrivateFor(playerId) : null,
       };
       conn.send(JSON.stringify(msg));

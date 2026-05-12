@@ -1,11 +1,12 @@
 import type { Card, Color, DraftCard } from "../cards/schema";
 
-export type Format = "booster" | "sealed" | "constructed";
+export type Format = "booster" | "sealed" | "constructed" | "highlander";
 
 export const FORMAT_LABEL: Record<Format, string> = {
   booster: "Booster Draft",
   sealed: "Sealed",
   constructed: "Constructed",
+  highlander: "Highlander",
 };
 
 export const FORMAT_DESCRIPTION: Record<Format, string> = {
@@ -13,6 +14,8 @@ export const FORMAT_DESCRIPTION: Record<Format, string> = {
   sealed: "Each player opens their own packs and builds a deck — no drafting.",
   constructed:
     "Bring your own list. Paste a decklist (4-of allowed) drawn from the active set.",
+  highlander:
+    "100-card singleton decks. Each player picks a saved Highlander deck (sign-in required).",
 };
 
 export type LobbyConfig = {
@@ -328,9 +331,9 @@ export const DEFAULT_CONFIG: LobbyConfig = {
 export const DEFAULT_PACKS_FOR_FORMAT: Record<Format, number> = {
   booster: 3,
   sealed: 6,
-  // Constructed doesn't actually use packs, but the field is kept on
-  // LobbyConfig for shape-stability; preserve a sane value.
+  // Constructed and Highlander don't use packs; keep the field for shape-stability.
   constructed: 0,
+  highlander: 0,
 };
 
 export const CONFIG_BOUNDS = {
@@ -344,6 +347,7 @@ export type LobbyPhase =
   | "drafting"
   | "deckbuilding"
   | "constructing"
+  | "highlander"
   | "matching"
   | "playing";
 
@@ -369,6 +373,34 @@ export type ConstructPrivateState = {
   ready: boolean;
 };
 
+/**
+ * Public Highlander state — visible to all players in the room.
+ * Players pick persistent decks from their profile; cards are resolved
+ * client-side against the cross-set library then sent to the server.
+ */
+export type HighlanderPublicState = {
+  players: Array<{
+    id: string;
+    name: string;
+    /** The persistent deck the player chose, or null while still picking. */
+    deckId: string | null;
+    deckName: string | null;
+    deckSize: number;
+    wins: number;
+    losses: number;
+    ready: boolean;
+    connected: boolean;
+  }>;
+};
+
+/** Private Highlander state — sent only to the recipient. */
+export type HighlanderPrivateState = {
+  deckId: string | null;
+  deckName: string | null;
+  deckSize: number;
+  ready: boolean;
+};
+
 export type LobbyPlayer = {
   id: string;
   name: string;
@@ -384,6 +416,7 @@ export type LobbyState = {
   draft: DraftPublicState | null;
   deckbuild: DeckbuildPublicState | null;
   construct: ConstructPublicState | null;
+  highlander: HighlanderPublicState | null;
   play: PlayPublicState | null;
   /** When in matching/playing phases, the current set of matches. */
   matches: MatchPublicState[] | null;
@@ -411,6 +444,17 @@ export type ClientMessage =
       /** Parser warnings to surface in the UI. */
       warnings: string[];
     }
+  | {
+      type: "setHighlanderDeck";
+      /** The persistent deck id from the player's profile. */
+      deckId: string;
+      deckName: string;
+      /** Already-resolved and minted cards from the client's library lookup. */
+      cards: DraftCard[];
+      /** Fetched from the DB so all players can see the opponent's record. */
+      wins: number;
+      losses: number;
+    }
   | { type: "setReady"; ready: boolean }
   | { type: "startPlay" }
   | { type: "playAction"; action: PlayAction }
@@ -428,6 +472,7 @@ export type ServerMessage =
       draftPrivate: DraftPrivateState | null;
       deckbuildPrivate: DeckbuildPrivateState | null;
       constructPrivate: ConstructPrivateState | null;
+      highlanderPrivate: HighlanderPrivateState | null;
       playPrivate: PlayPrivateState | null;
     }
   | { type: "error"; message: string }
@@ -436,7 +481,11 @@ export type ServerMessage =
 export function clampConfig(c: LobbyConfig): LobbyConfig {
   const { maxPlayers, packsPerPlayer, startingLife } = CONFIG_BOUNDS;
   const format: Format =
-    c.format === "sealed" || c.format === "constructed" ? c.format : "booster";
+    c.format === "sealed" ||
+    c.format === "constructed" ||
+    c.format === "highlander"
+      ? c.format
+      : "booster";
   return {
     format,
     maxPlayers: clamp(c.maxPlayers, maxPlayers.min, maxPlayers.max),

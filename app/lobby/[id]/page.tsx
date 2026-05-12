@@ -20,12 +20,14 @@ import {
 function startButtonLabel(format: Format): string {
   if (format === "sealed") return "open sealed pools";
   if (format === "constructed") return "open deck builders";
+  if (format === "highlander") return "pick highlander decks";
   return "start draft";
 }
 
 function startButtonHint(format: Format): string {
   if (format === "sealed") return "Open sealed pools";
   if (format === "constructed") return "Send everyone to the constructed builder";
+  if (format === "highlander") return "Send everyone to pick their Highlander deck";
   return "Start the draft";
 }
 import type { Card } from "@/lib/cards/schema";
@@ -198,6 +200,8 @@ function LobbyConnected({
           router.push(`/build/${lobbyId}`);
         } else if (msg.state.phase === "constructing") {
           router.push(`/construct/${lobbyId}`);
+        } else if (msg.state.phase === "highlander") {
+          router.push(`/highlander/${lobbyId}`);
         } else if (msg.state.phase === "matching") {
           router.push(`/match/${lobbyId}`);
         } else if (msg.state.phase === "playing") {
@@ -456,6 +460,7 @@ function LobbyConnected({
           </ul>
         </section>
 
+        {(state?.config.format ?? "booster") !== "highlander" ? (
         <section className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
           <div className="mb-2 flex items-baseline justify-between">
             <h2 className="text-xs uppercase tracking-wide text-zinc-500">
@@ -617,6 +622,7 @@ function LobbyConnected({
             </p>
           ) : null}
         </section>
+        ) : null}
 
         <section className="rounded border border-zinc-200 p-3 dark:border-zinc-800">
           <h2 className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
@@ -671,7 +677,8 @@ function LobbyConnected({
                 send({ type: "updateConfig", config: { maxPlayers: v } })
               }
             />
-            {(state?.config.format ?? "booster") !== "constructed" ? (
+            {(state?.config.format ?? "booster") !== "constructed" &&
+            (state?.config.format ?? "booster") !== "highlander" ? (
               <ConfigSlider
                 label={
                   (state?.config.format ?? "booster") === "sealed"
