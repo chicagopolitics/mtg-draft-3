@@ -1,5 +1,5 @@
 /**
- * Auth.js v5 setup with magic-link email via Resend.
+ * Auth.js v5 setup with Discord OAuth + magic-link email via Resend.
  *
  * Exports the four canonical hooks (`auth`, `handlers`, `signIn`, `signOut`)
  * so the rest of the app can:
@@ -7,13 +7,14 @@
  *   - Mount the OAuth callback endpoints from /api/auth/[...nextauth]/route.ts
  *   - Trigger sign-in/-out flows from server actions.
  *
- * The "Resend" provider is built into next-auth (no separate package), but
- * it expects a verified sender domain. We override `from` to use Resend's
- * default `onboarding@resend.dev` so this works without DNS setup.
+ * Discord is the primary sign-in method (works for everyone). Resend
+ * magic-link email is kept as a secondary option but only works for the
+ * account owner on the free tier (requires domain verification for others).
  */
 
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import NextAuth from "next-auth";
+import Discord from "next-auth/providers/discord";
 import Resend from "next-auth/providers/resend";
 
 import { db } from "@/lib/db/client";
@@ -40,6 +41,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   // server restarts. (JWT mode is faster but harder to revoke.)
   session: { strategy: "database" },
   providers: [
+    Discord({
+      clientId: process.env.AUTH_DISCORD_CLIENT_ID,
+      clientSecret: process.env.AUTH_DISCORD_CLIENT_SECRET,
+    }),
     Resend({
       apiKey: process.env.RESEND_API_KEY,
       from: "onboarding@resend.dev",
