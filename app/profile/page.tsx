@@ -41,14 +41,22 @@ export default async function ProfilePage() {
             <span className="font-mono">{session.user.email}</span>.
           </p>
         </div>
-        <form action={doSignOut}>
-          <button
-            type="submit"
+        <div className="flex items-center gap-4">
+          <Link
+            href="/"
             className="text-xs text-zinc-500 underline hover:text-zinc-800 dark:hover:text-zinc-200"
           >
-            sign out
-          </button>
-        </form>
+            ← lobbies
+          </Link>
+          <form action={doSignOut}>
+            <button
+              type="submit"
+              className="text-xs text-zinc-500 underline hover:text-zinc-800 dark:hover:text-zinc-200"
+            >
+              sign out
+            </button>
+          </form>
+        </div>
       </header>
 
       <section className="space-y-2">

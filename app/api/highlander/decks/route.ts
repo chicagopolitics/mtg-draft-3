@@ -44,6 +44,9 @@ export async function GET() {
         name: deck.name,
         format: deck.format,
         updatedAt: deck.updatedAt,
+        lockedAt: deck.lockedAt,
+        wins: deck.wins,
+        losses: deck.losses,
         cardCount: cards.length,
         cards,
       };
