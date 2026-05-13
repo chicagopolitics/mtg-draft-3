@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCardArt } from "@/lib/artCache";
 import type { Card, CardType, Color } from "@/lib/cards/schema";
+import { SetSymbol } from "@/components/Card";
 
 type SetInfo = { code: string; name: string };
 
@@ -408,12 +409,12 @@ function CardRow({
           {card.subtype ?? card.type}
         </span>
         {card.setCode ? (
-          <span
-            className="shrink-0 rounded bg-zinc-200 px-1.5 py-0.5 font-mono text-[10px] uppercase text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-            title={card.setName ?? card.setCode.toUpperCase()}
-          >
-            {card.setCode}
-          </span>
+          <SetSymbol
+            setCode={card.setCode}
+            setName={card.setName}
+            rarity={card.rarity}
+            size={14}
+          />
         ) : null}
         {card.type === "creature" &&
         card.power !== undefined &&

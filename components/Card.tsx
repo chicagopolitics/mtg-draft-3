@@ -96,6 +96,59 @@ const RARITY_LABEL_COLOR: Record<Rarity, string> = {
   mythic: "text-orange-600",
 };
 
+/**
+ * Actual rarity hex colors matching real MTG set symbols:
+ *   Common = black, Uncommon = silver, Rare = gold, Mythic = orange-red
+ */
+const RARITY_SYMBOL_COLOR: Record<Rarity, string> = {
+  common: "#1a1a1a",
+  uncommon: "#708090",
+  rare: "#c9a959",
+  mythic: "#d14d28",
+};
+
+/** Scryfall hosts set symbol SVGs at stable URLs (free, no auth). */
+function setSymbolUrl(code: string): string {
+  return `https://svgs.scryfall.io/sets/${code.toLowerCase()}.svg`;
+}
+
+/**
+ * Renders an MTG set symbol, color-coded by rarity.
+ * Uses CSS mask-image so the SVG acts as a stencil filled with the rarity color.
+ */
+export function SetSymbol({
+  setCode,
+  setName,
+  rarity,
+  size = 14,
+}: {
+  setCode: string;
+  setName?: string;
+  rarity: Rarity;
+  size?: number;
+}) {
+  return (
+    <span
+      title={setName ?? setCode.toUpperCase()}
+      aria-label={`${setName ?? setCode.toUpperCase()} (${rarity})`}
+      className="inline-block shrink-0"
+      style={{
+        width: size,
+        height: size,
+        backgroundColor: RARITY_SYMBOL_COLOR[rarity],
+        WebkitMaskImage: `url(${setSymbolUrl(setCode)})`,
+        maskImage: `url(${setSymbolUrl(setCode)})`,
+        WebkitMaskSize: "contain",
+        maskSize: "contain",
+        WebkitMaskRepeat: "no-repeat",
+        maskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        maskPosition: "center",
+      }}
+    />
+  );
+}
+
 const TEXT_MAX_PX = 12;
 const TEXT_MIN_PX = 8;
 
@@ -451,22 +504,21 @@ export function CardView({
         >
           {fullTypeLine(card)}
         </span>
-        <span className="flex shrink-0 items-center gap-1">
-          {card.setCode ? (
-            <span
-              className="font-mono text-[10px] uppercase text-zinc-500 dark:text-zinc-400"
-              title={card.setName ?? card.setCode.toUpperCase()}
-            >
-              {card.setCode}
-            </span>
-          ) : null}
+        {card.setCode ? (
+          <SetSymbol
+            setCode={card.setCode}
+            setName={card.setName}
+            rarity={card.rarity}
+            size={16}
+          />
+        ) : (
           <span
-            className={`font-mono font-semibold ${RARITY_LABEL_COLOR[card.rarity]}`}
+            className={`shrink-0 font-mono font-semibold ${RARITY_LABEL_COLOR[card.rarity]}`}
             title={card.rarity}
           >
             {RARITY_LABEL[card.rarity]}
           </span>
-        </span>
+        )}
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col rounded bg-white/85 p-2 leading-snug shadow-inner dark:bg-zinc-900/70">
