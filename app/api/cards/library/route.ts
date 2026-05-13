@@ -61,7 +61,9 @@ async function buildLibrary(): Promise<LibraryResult> {
   let totalCardsRead = 0;
 
   for (const file of files) {
-    const code = file.replace(/\.json$/i, "").toUpperCase();
+    // Strip trailing underscores so "CON_.json" → "CON" (CON is a reserved
+    // filename on Windows, so Conflux is stored as CON_.json).
+    const code = file.replace(/\.json$/i, "").replace(/_+$/, "").toUpperCase();
     try {
       const raw = await fs.readFile(path.join(setsDir, file), "utf8");
       const json = JSON.parse(raw.replace(/^﻿/, "")) as MtgJsonSet;
