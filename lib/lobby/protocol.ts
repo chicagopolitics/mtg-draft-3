@@ -194,6 +194,12 @@ export type PlayPrivateState = {
 
 export type BestOf = 1 | 3 | 5;
 
+/** A card removed from a player's deck as ante (Highlander only). */
+export type AnteCard = {
+  card: DraftCard;
+  playerId: string;
+};
+
 export type MatchPublicState = {
   id: string;
   /** Two teams of 1+ players. Length-1 teams = classic 1v1; length-2 = 2HG. */
@@ -229,6 +235,12 @@ export type MatchPublicState = {
    * request's owner. Auto-expire after a short timeout server-side.
    */
   pendingSteals: PendingSteal[];
+  /**
+   * Ante cards for the current game (Highlander only). Each player in the
+   * match has one entry — the card pulled from the top of their shuffled
+   * deck at the start of the game. Empty for non-Highlander formats.
+   */
+  ante: AnteCard[];
 };
 
 export type MatchPairing = {

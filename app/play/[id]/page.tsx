@@ -611,6 +611,23 @@ function PlayBoard({
             <div className="font-mono">
               You {myWins} – {oppWins} {opponentName} (first to {winsNeeded})
             </div>
+            {match.ante.length > 0 ? (
+              <div className="mt-0.5 flex items-center justify-end gap-1.5 font-mono">
+                <span className="font-semibold text-amber-600 dark:text-amber-400">
+                  ANTE:
+                </span>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                  {match.ante.find((a) => a.playerId === playerId)?.card.name ??
+                    "—"}
+                </span>
+                <span className="text-zinc-400">vs</span>
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                  {match.ante.find((a) =>
+                    match.teams[oppTeamIdx].includes(a.playerId),
+                  )?.card.name ?? "—"}
+                </span>
+              </div>
+            ) : null}
           </div>
           {match.status === "active" && match.currentGameWinner === null ? (
             <>
@@ -857,6 +874,19 @@ function PlayBoard({
           subtitle={`Score: You ${myWins} – ${oppWins} ${opponentName}`}
           actionLabel="Start next game"
           onAction={() => sendRaw({ type: "advanceGame", matchId: match.id })}
+          anteWon={
+            match.currentGameWinner === myTeamIdx
+              ? (match.ante.find((a) =>
+                  match.teams[oppTeamIdx].includes(a.playerId),
+                )?.card.name ?? null)
+              : null
+          }
+          anteLost={
+            match.currentGameWinner !== myTeamIdx
+              ? (match.ante.find((a) => a.playerId === playerId)?.card.name ??
+                  null)
+              : null
+          }
         />
       ) : null}
 
@@ -881,6 +911,19 @@ function PlayBoard({
             isAdmin && allMatchesComplete
               ? () => sendRaw({ type: "returnToMatching" })
               : undefined
+          }
+          anteWon={
+            match.matchWinner === myTeamIdx
+              ? (match.ante.find((a) =>
+                  match.teams[oppTeamIdx].includes(a.playerId),
+                )?.card.name ?? null)
+              : null
+          }
+          anteLost={
+            match.matchWinner !== myTeamIdx
+              ? (match.ante.find((a) => a.playerId === playerId)?.card.name ??
+                  null)
+              : null
           }
         />
       ) : null}
@@ -1023,17 +1066,50 @@ function ResultOverlay({
   subtitle,
   actionLabel,
   onAction,
+  anteWon,
+  anteLost,
 }: {
   title: string;
   subtitle: string;
   actionLabel: string;
   onAction?: () => void;
+  /** Name of the card the viewer won via ante (null if they lost). */
+  anteWon?: string | null;
+  /** Name of the card the viewer lost via ante (null if they won). */
+  anteLost?: string | null;
 }) {
   return (
     <div className="absolute inset-0 z-50 grid place-items-center bg-black/60">
       <div className="space-y-3 rounded bg-white p-6 text-center shadow-xl dark:bg-zinc-900">
         <h2 className="text-xl font-bold">{title}</h2>
         <p className="text-sm text-zinc-500">{subtitle}</p>
+
+        {anteWon ? (
+          <div className="animate-pulse rounded border border-emerald-400 bg-emerald-50 px-4 py-2 dark:border-emerald-700 dark:bg-emerald-950/40">
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+              Ante won
+            </p>
+            <p className="text-sm font-bold text-emerald-800 dark:text-emerald-200">
+              {anteWon}
+            </p>
+            <p className="text-[10px] text-emerald-600/80 dark:text-emerald-400/60">
+              This card has been added to your deck
+            </p>
+          </div>
+        ) : anteLost ? (
+          <div className="animate-pulse rounded border border-red-400 bg-red-50 px-4 py-2 dark:border-red-700 dark:bg-red-950/40">
+            <p className="text-xs font-semibold uppercase tracking-wide text-red-600 dark:text-red-400">
+              Ante lost
+            </p>
+            <p className="text-sm font-bold text-red-800 dark:text-red-200">
+              {anteLost}
+            </p>
+            <p className="text-[10px] text-red-600/80 dark:text-red-400/60">
+              This card has been transferred to your opponent
+            </p>
+          </div>
+        ) : null}
+
         {onAction ? (
           <button
             type="button"

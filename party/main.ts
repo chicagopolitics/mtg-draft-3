@@ -23,6 +23,7 @@ import {
   type DraftDirection,
   type DraftPrivateState,
   type DraftPublicState,
+  type AnteCard,
   type HighlanderPrivateState,
   type HighlanderPublicState,
   type LobbyConfig,
@@ -169,6 +170,8 @@ type MatchRuntime = {
   turnNumber: number;
   /** Active steal requests with cleanup timers; trimmed on response/expiry. */
   pendingSteals: ServerPendingSteal[];
+  /** Ante cards for the current game (Highlander only). */
+  ante: AnteCard[];
 };
 
 type ServerPendingSteal = {
@@ -535,6 +538,8 @@ export default class LobbyServer implements Party.Server {
           match.status = "complete";
           match.matchWinner = winnerIdx;
         }
+        // Fire-and-forget: record W/L + ante transfer for Highlander.
+        this.resolveHighlanderGame(match);
         this.broadcastState();
         return;
       }
@@ -560,6 +565,7 @@ export default class LobbyServer implements Party.Server {
         for (const pid of [...match.teams[0], ...match.teams[1]]) {
           match.states[pid] = freshGameState(this.loadouts[pid]);
         }
+        drawAnte(match, this.loadouts);
         this.broadcastState();
         return;
       }
@@ -948,7 +954,7 @@ export default class LobbyServer implements Party.Server {
       for (const pid of allPlayers) {
         states[pid] = freshGameState(this.loadouts[pid]);
       }
-      built.push({
+      const match: MatchRuntime = {
         id: matchId(allPlayers[0], allPlayers[allPlayers.length - 1]),
         teams: [teams[0].slice(), teams[1].slice()],
         bestOf,
@@ -965,7 +971,10 @@ export default class LobbyServer implements Party.Server {
         nextGameStarterTeamIdx: 1,
         turnNumber: 1,
         pendingSteals: [],
-      });
+        ante: [],
+      };
+      drawAnte(match, this.loadouts);
+      built.push(match);
     }
     return { ok: true, matches: built };
   }
@@ -1318,6 +1327,75 @@ export default class LobbyServer implements Party.Server {
     }
   }
 
+  // ---------- highlander ante / W-L ----------
+
+  /**
+   * Fire-and-forget: records W/L on both decks and transfers the loser's
+   * ante card to the winner's deck via the Next.js API. Only operates on
+   * Highlander matches (loadouts with a deckId). Called when
+   * currentGameWinner is set.
+   */
+  private resolveHighlanderGame(match: MatchRuntime): void {
+    if (match.currentGameWinner === null || !this.loadouts) return;
+
+    const winnerTeamIdx = match.currentGameWinner;
+    const loserTeamIdx = winnerTeamIdx === 0 ? 1 : 0;
+    const winnerPids = match.teams[winnerTeamIdx];
+    const loserPids = match.teams[loserTeamIdx];
+
+    const winnerDeckId = winnerPids
+      .map((pid) => this.loadouts![pid]?.deckId)
+      .find(Boolean);
+    const loserDeckId = loserPids
+      .map((pid) => this.loadouts![pid]?.deckId)
+      .find(Boolean);
+
+    // Skip for non-Highlander matches.
+    if (!winnerDeckId && !loserDeckId) return;
+
+    const appUrl = (this.room.env as Record<string, unknown>).NEXT_APP_URL as
+      | string
+      | undefined;
+    const apiKey = (this.room.env as Record<string, unknown>).INTERNAL_API_KEY as
+      | string
+      | undefined;
+    if (!appUrl || !apiKey) return;
+
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    };
+
+    // Record W/L on both decks.
+    fetch(`${appUrl}/api/highlander/record-game`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ winnerDeckId, loserDeckId }),
+    }).catch(() => {});
+
+    // Transfer ante: the loser's ante card goes to the winner's deck.
+    if (!winnerDeckId || !loserDeckId) return;
+    const loserAnte = match.ante.find((a) => loserPids.includes(a.playerId));
+    if (!loserAnte) return;
+    const loserName =
+      this.players.get(loserAnte.playerId)?.name ?? "Unknown";
+
+    fetch(`${appUrl}/api/highlander/transfer-ante`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        winnerDeckId,
+        loserDeckId,
+        cardName: loserAnte.card.name,
+        setCode: loserAnte.card.setCode ?? null,
+        collectorNumber: loserAnte.card.collectorNumber ?? null,
+        loserDisplayName: loserName,
+        matchId: match.id,
+        gameNumber: match.gameNumber,
+      }),
+    }).catch(() => {});
+  }
+
   // ---------- snapshots ----------
 
   private hasAdmin(): boolean {
@@ -1536,6 +1614,7 @@ export default class LobbyServer implements Party.Server {
           ownerId: s.ownerId,
           ownerName: this.players.get(s.ownerId)?.name ?? "?",
         })),
+        ante: m.ante.map((a) => ({ card: a.card, playerId: a.playerId })),
         players: allPids.map((pid): PlayPublicPlayer => {
           const player = this.players.get(pid)!;
           const ps = m.states[pid];
@@ -1679,6 +1758,30 @@ function clampLife(n: number): number {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+/**
+ * For Highlander matches, pop the top card of each player's shuffled deck
+ * as ante. The card is removed from the deck — if the player wins, they
+ * get it back; if they lose, it's transferred to the winner's persistent
+ * deck via the API. No-ops for non-Highlander loadouts (no deckId).
+ */
+function drawAnte(
+  match: MatchRuntime,
+  loadouts: Record<string, Loadout> | null,
+): void {
+  match.ante = [];
+  if (!loadouts) return;
+  const allPlayers = [...match.teams[0], ...match.teams[1]];
+  for (const pid of allPlayers) {
+    const loadout = loadouts[pid];
+    // Only Highlander loadouts carry a deckId.
+    if (!loadout?.deckId) continue;
+    const ps = match.states[pid];
+    if (!ps || ps.deck.length === 0) continue;
+    const [anteCard] = ps.deck.splice(0, 1);
+    match.ante.push({ card: anteCard, playerId: pid });
+  }
 }
 
 function freshGameState(loadout: Loadout): PlayingPlayerState {
