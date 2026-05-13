@@ -451,11 +451,21 @@ export function CardView({
         >
           {fullTypeLine(card)}
         </span>
-        <span
-          className={`shrink-0 font-mono font-semibold ${RARITY_LABEL_COLOR[card.rarity]}`}
-          title={card.rarity}
-        >
-          {RARITY_LABEL[card.rarity]}
+        <span className="flex shrink-0 items-center gap-1">
+          {card.setCode ? (
+            <span
+              className="font-mono text-[10px] uppercase text-zinc-500 dark:text-zinc-400"
+              title={card.setName ?? card.setCode.toUpperCase()}
+            >
+              {card.setCode}
+            </span>
+          ) : null}
+          <span
+            className={`font-mono font-semibold ${RARITY_LABEL_COLOR[card.rarity]}`}
+            title={card.rarity}
+          >
+            {RARITY_LABEL[card.rarity]}
+          </span>
         </span>
       </div>
 
