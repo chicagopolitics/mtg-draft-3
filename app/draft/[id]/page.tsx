@@ -132,6 +132,7 @@ function DraftConnected({
       lobbyId={lobbyId}
       playerId={playerId}
       draft={state.draft}
+      setName={state.customSetName}
       priv={draftPrivate}
       pick={pick}
       error={error}
@@ -143,6 +144,7 @@ function DraftActive({
   lobbyId,
   playerId,
   draft,
+  setName,
   priv,
   pick,
   error,
@@ -150,6 +152,7 @@ function DraftActive({
   lobbyId: string;
   playerId: string;
   draft: DraftPublicState;
+  setName: string | null;
   priv: DraftPrivateState | null;
   pick: (instanceId: string) => void;
   error: string | null;
@@ -167,6 +170,11 @@ function DraftActive({
           <h1 className="text-xl font-semibold tracking-tight">
             draft —{" "}
             <span className="font-mono text-zinc-500">{lobbyId}</span>
+            {setName ? (
+              <span className="ml-2 text-base font-normal text-amber-600 dark:text-amber-400">
+                {setName}
+              </span>
+            ) : null}
           </h1>
           <p className="text-xs text-zinc-500">
             round {draft.round} of {draft.totalRounds} · passing {passWord}{" "}

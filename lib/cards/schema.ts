@@ -54,6 +54,8 @@ export const CardSchema = z.object({
   collectorNumber: z.string().optional(),
   /** Lowercase set code (e.g., "usg", "tmp"). Pairs with collectorNumber for art lookup. */
   setCode: z.string().max(8).optional(),
+  /** Human-readable set name (e.g., "Urza's Saga", "Tempest"). */
+  setName: z.string().max(80).optional(),
 });
 export type Card = z.infer<typeof CardSchema>;
 

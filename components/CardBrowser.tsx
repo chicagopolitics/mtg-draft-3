@@ -5,6 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCardArt } from "@/lib/artCache";
 import type { Card, CardType, Color } from "@/lib/cards/schema";
 
+type SetInfo = { code: string; name: string };
+
 const COLORS: Color[] = ["W", "U", "B", "R", "G"];
 const COLOR_LABEL: Record<Color, string> = {
   W: "White",
@@ -67,11 +69,14 @@ function cardMatchesColors(card: Card, picked: Set<Color>): boolean {
 
 export function CardBrowser({
   library,
+  sets,
   deckCounts,
   onAdd,
   onClose,
 }: {
   library: Card[];
+  /** Available sets for the set filter dropdown. */
+  sets?: SetInfo[];
   /** Lookup of how many of each card name are currently in the decklist. */
   deckCounts: Map<string, number>;
   onAdd: (cardName: string) => void;
@@ -81,6 +86,7 @@ export function CardBrowser({
   const [pickedColors, setPickedColors] = useState<Set<Color>>(new Set());
   const [includeColorless, setIncludeColorless] = useState(false);
   const [pickedTypes, setPickedTypes] = useState<Set<CardType>>(new Set());
+  const [pickedSet, setPickedSet] = useState("");
   const [revealed, setRevealed] = useState<string | null>(null);
   const [justAddedId, setJustAddedId] = useState<string | null>(null);
 
@@ -114,6 +120,7 @@ export function CardBrowser({
     for (const c of library) {
       if (q && !c.name.toLowerCase().includes(q)) continue;
       if (pickedTypes.size > 0 && !pickedTypes.has(c.type)) continue;
+      if (pickedSet && c.setCode !== pickedSet) continue;
 
       // Color filter:
       // - If user has chosen any colors, the card must fit within those colors
@@ -142,12 +149,12 @@ export function CardBrowser({
       result.push(c);
     }
     return result;
-  }, [library, query, pickedTypes, pickedColors, includeColorless]);
+  }, [library, query, pickedTypes, pickedColors, includeColorless, pickedSet]);
 
   // Reset visible count when filters change.
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [query, pickedTypes, pickedColors, includeColorless]);
+  }, [query, pickedTypes, pickedColors, includeColorless, pickedSet]);
 
   const hasMore = visibleCount < filtered.length;
   const visible = filtered.slice(0, visibleCount);
@@ -193,6 +200,7 @@ export function CardBrowser({
     setPickedColors(new Set());
     setIncludeColorless(false);
     setPickedTypes(new Set());
+    setPickedSet("");
   }
 
   return (
@@ -280,6 +288,23 @@ export function CardBrowser({
                 {t}
               </button>
             ))}
+            {sets && sets.length > 0 ? (
+              <>
+                <span className="ml-3 text-zinc-500">Set:</span>
+                <select
+                  value={pickedSet}
+                  onChange={(e) => setPickedSet(e.target.value)}
+                  className="rounded border border-zinc-300 bg-white px-2 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-800"
+                >
+                  <option value="">All sets</option>
+                  {sets.map((s) => (
+                    <option key={s.code} value={s.code}>
+                      {s.name} ({s.code.toUpperCase()})
+                    </option>
+                  ))}
+                </select>
+              </>
+            ) : null}
             <button
               type="button"
               onClick={clearFilters}
@@ -382,6 +407,14 @@ function CardRow({
         <span className="shrink-0 text-xs capitalize text-zinc-500">
           {card.subtype ?? card.type}
         </span>
+        {card.setCode ? (
+          <span
+            className="shrink-0 rounded bg-zinc-200 px-1.5 py-0.5 font-mono text-[10px] uppercase text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+            title={card.setName ?? card.setCode.toUpperCase()}
+          >
+            {card.setCode}
+          </span>
+        ) : null}
         {card.type === "creature" &&
         card.power !== undefined &&
         card.toughness !== undefined ? (

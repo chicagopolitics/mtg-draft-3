@@ -23,8 +23,10 @@ import {
 } from "@/lib/identity";
 import { getPartykitHost } from "@/lib/partykit-client";
 
+type SetInfo = { code: string; name: string };
 type CardLibrary = {
   cards: Card[];
+  sets?: SetInfo[];
   uniqueCardCount: number;
   totalSetsRead: number;
 };
@@ -497,6 +499,7 @@ function Construct({
       {browserOpen ? (
         <CardBrowser
           library={library.cards}
+          sets={library.sets}
           deckCounts={decklistCounts(text)}
           onAdd={addCardFromBrowser}
           onClose={() => setBrowserOpen(false)}

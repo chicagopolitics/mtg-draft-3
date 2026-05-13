@@ -105,20 +105,24 @@ function fixMojibake(s: string | undefined): string | undefined {
  * isn't in our enum (planeswalkers etc. — Tempest has none) and dedupes
  * variant printings by name.
  */
-export function convertMtgJsonSet(set: MtgJsonSet, idPrefix: string): Card[] {
+export function convertMtgJsonSet(
+  set: MtgJsonSet,
+  idPrefix: string,
+  setName?: string,
+): Card[] {
   const seen = new Set<string>();
   const out: Card[] = [];
   const cards = set.data?.cards ?? [];
   for (const c of cards) {
     if (!c.name || seen.has(c.name)) continue;
     seen.add(c.name);
-    const converted = convertCard(c, idPrefix);
+    const converted = convertCard(c, idPrefix, setName);
     if (converted) out.push(converted);
   }
   return out;
 }
 
-function convertCard(c: MtgJsonCard, idPrefix: string): Card | null {
+function convertCard(c: MtgJsonCard, idPrefix: string, setName?: string): Card | null {
   const primary = pickPrimaryType(c.types);
   if (!primary || !SUPPORTED_TYPES.includes(primary)) return null;
 
@@ -163,6 +167,7 @@ function convertCard(c: MtgJsonCard, idPrefix: string): Card | null {
     toughness: parseStat(c.toughness),
     collectorNumber: c.number,
     setCode: idPrefix,
+    setName,
   };
 }
 

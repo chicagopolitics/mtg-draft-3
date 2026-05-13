@@ -10,7 +10,8 @@ import {
 } from "@/lib/highlander/parser";
 import type { Card } from "@/lib/cards/schema";
 
-type CardLibrary = { cards: Card[] };
+type SetInfo = { code: string; name: string };
+type CardLibrary = { cards: Card[]; sets?: SetInfo[] };
 
 export type DeckEditorSubmitInput = {
   name: string;
@@ -437,6 +438,7 @@ export function DeckEditor({
       {!locked && browserOpen && library ? (
         <CardBrowser
           library={library.cards}
+          sets={library.sets}
           deckCounts={
             new Map(
               (validation?.cards ?? []).reduce((acc, c) => {

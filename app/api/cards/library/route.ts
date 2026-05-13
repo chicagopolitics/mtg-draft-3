@@ -3,10 +3,18 @@ import path from "node:path";
 
 import { BASIC_LAND_IDS, getFallbackBasicLands } from "@/lib/cards/basics";
 import { convertMtgJsonSet, type MtgJsonSet } from "@/lib/cards/sets/mtgjson";
+import { getSetName } from "@/lib/cards/sets/names";
 import type { Card } from "@/lib/cards/schema";
+
+type SetInfo = {
+  code: string;
+  name: string;
+};
 
 type LibraryResult = {
   cards: Card[];
+  /** All sets that contributed at least one card, sorted by name. */
+  sets: SetInfo[];
   totalSetsRead: number;
   totalCardsRead: number;
   uniqueCardCount: number;
@@ -64,10 +72,11 @@ async function buildLibrary(): Promise<LibraryResult> {
     // Strip trailing underscores so "CON_.json" → "CON" (CON is a reserved
     // filename on Windows, so Conflux is stored as CON_.json).
     const code = file.replace(/\.json$/i, "").replace(/_+$/, "").toUpperCase();
+    const setName = getSetName(code);
     try {
       const raw = await fs.readFile(path.join(setsDir, file), "utf8");
       const json = JSON.parse(raw.replace(/^﻿/, "")) as MtgJsonSet;
-      const cards = convertMtgJsonSet(json, code.toLowerCase());
+      const cards = convertMtgJsonSet(json, code.toLowerCase(), setName);
       totalCardsRead += cards.length;
       for (const c of cards) allEntries.push({ card: c, sourceSet: code });
     } catch (e) {
@@ -104,8 +113,20 @@ async function buildLibrary(): Promise<LibraryResult> {
   // Stable sort by name for predictable client-side iteration.
   cards.sort((a, b) => a.name.localeCompare(b.name));
 
+  // Build the set list from cards that actually made it through dedup.
+  const setsSeen = new Set<string>();
+  const sets: SetInfo[] = [];
+  for (const c of cards) {
+    if (c.setCode && !setsSeen.has(c.setCode)) {
+      setsSeen.add(c.setCode);
+      sets.push({ code: c.setCode, name: getSetName(c.setCode) });
+    }
+  }
+  sets.sort((a, b) => a.name.localeCompare(b.name));
+
   return {
     cards,
+    sets,
     totalSetsRead: files.length,
     totalCardsRead,
     uniqueCardCount: cards.length,
