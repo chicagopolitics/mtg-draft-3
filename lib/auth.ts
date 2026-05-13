@@ -44,6 +44,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     Discord({
       clientId: process.env.AUTH_DISCORD_CLIENT_ID,
       clientSecret: process.env.AUTH_DISCORD_CLIENT_SECRET,
+      allowDangerousEmailAccountLinking: true,
     }),
     Resend({
       apiKey: process.env.RESEND_API_KEY,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCardArt } from "@/lib/artCache";
 import type { Card, CardType, Color } from "@/lib/cards/schema";
@@ -22,7 +22,7 @@ const TYPES: CardType[] = [
   "land",
 ];
 
-const MAX_ROWS = 200;
+const PAGE_SIZE = 200;
 
 function manaSymbolUrl(symbol: string): string {
   return `https://svgs.scryfall.io/card-symbols/${symbol}.svg`;
@@ -105,6 +105,9 @@ export function CardBrowser({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const result: Card[] = [];
@@ -137,13 +140,35 @@ export function CardBrowser({
       }
 
       result.push(c);
-      if (result.length > MAX_ROWS + 1) break;
     }
     return result;
   }, [library, query, pickedTypes, pickedColors, includeColorless]);
 
-  const overflow = filtered.length > MAX_ROWS;
-  const visible = overflow ? filtered.slice(0, MAX_ROWS) : filtered;
+  // Reset visible count when filters change.
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [query, pickedTypes, pickedColors, includeColorless]);
+
+  const hasMore = visibleCount < filtered.length;
+  const visible = filtered.slice(0, visibleCount);
+
+  // IntersectionObserver: load more when sentinel scrolls into view.
+  const loadMore = useCallback(() => {
+    setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, filtered.length));
+  }, [filtered.length]);
+
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [loadMore]);
 
   function toggleColor(c: Color) {
     setPickedColors((prev) => {
@@ -287,10 +312,17 @@ export function CardBrowser({
               ))}
             </ul>
           )}
-          {overflow ? (
+          {hasMore ? (
+            <div
+              ref={sentinelRef}
+              className="border-t border-zinc-200 p-3 text-center text-xs text-zinc-500 dark:border-zinc-800"
+            >
+              Showing {visible.length} of {filtered.length} matches — scroll for
+              more
+            </div>
+          ) : filtered.length > 0 ? (
             <p className="border-t border-zinc-200 p-3 text-center text-xs text-zinc-500 dark:border-zinc-800">
-              Showing first {MAX_ROWS} of {filtered.length}+ matches — refine
-              your search to see more.
+              {filtered.length} card{filtered.length !== 1 ? "s" : ""} shown
             </p>
           ) : null}
         </div>
